@@ -62,6 +62,7 @@ pub fn wait(self: *Self, options: WaitOptions) error{Timeout, DeadlockInDispatch
     return null;
 }
 
+/// Posts message to pending response, then wakeups waiters
 pub fn post(self: *Self, message: *DBusMessage) !void {
     self.cv_mutex.lock();
     defer self.cv_mutex.unlock();
@@ -85,6 +86,41 @@ pub fn post(self: *Self, message: *DBusMessage) !void {
     self.cv.broadcast();
 }
 
+/// Change the feedback type for the pending response.
+/// If original feedback was .call it was already signaled, returns error.AlreadySignaled
+/// If original feedback was .store and new feedback is .call, if message already posted, immediately calls handlers
+pub fn changeFeedback(self: *Self, new_feedback: Feedback) error{AlreadySignaled}!void {
+    self.cv_mutex.lock();
+    defer self.cv_mutex.unlock();
+    switch (self.feedback) {
+        .call => |handlers| {
+            if (handlers.signaled) return error.AlreadySignaled;
+            self.feedback = new_feedback;
+        },
+        .store => |msg| {
+            self.feedback = new_feedback;
+            if (msg) |message| {
+                switch(self.feedback) {
+                    .call => |*handlers| {
+                        defer message.allocator.destroy(message);
+                        defer message.deinit();
+                        switch (message.message_type) {
+                            .METHOD_RETURN => handlers.method_reply(handlers.userdata, message) catch {},
+                            .ERROR => handlers.method_error(handlers.userdata, message) catch {},
+                            else => @panic("Unexpected message type in PendingResponse")
+                        }
+                        handlers.signaled = true;
+                    },
+                    .store => {
+                        self.feedback.store = message;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Signals that pending response has timed out
 pub fn timeout(self: *Self) !void {
     self.cv_mutex.lock();
     defer self.cv_mutex.unlock();

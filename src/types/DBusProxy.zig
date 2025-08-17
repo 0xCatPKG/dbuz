@@ -1,3 +1,10 @@
+//! Helper struct that simplifies communication with peers on the bus.
+//! For example, given that we want to talk to the interface "org.example.Test", with interface "org.example.TestInterface" at path "/org/example/Test", instead of manually constructing a long MethodCallParams in connection.call, we instead can do following:
+//! ```
+//! const test_interface = connection.proxy("org.example.Test", allocator, .{}).at("/org/example/Test").to("org.example.TestInterface");
+//! _ = try test_interface.call("Method", .{}, .{});
+//! ```
+
 const std = @import("std");
 const dbus_types = @import("dbus_types.zig");
 
@@ -34,6 +41,7 @@ pub fn init(conn: *DBusConnection, allocator: std.mem.Allocator, options: Option
     };
 }
 
+/// Sets the object path for the proxy.
 pub fn at(self: DBusProxy, path: []const u8) DBusProxy {
     return DBusProxy.init(self.connection, self.allocator, .{
         .destination = self.destination,
@@ -43,6 +51,7 @@ pub fn at(self: DBusProxy, path: []const u8) DBusProxy {
     });
 }
 
+/// Sets the interface for the proxy.
 pub fn to(self: DBusProxy, name: []const u8) DBusProxy {
     return DBusProxy.init(self.connection, self.allocator, .{
         .destination = self.destination,
@@ -52,6 +61,7 @@ pub fn to(self: DBusProxy, name: []const u8) DBusProxy {
     });
 }
 
+/// Sets the sender for the proxy.
 pub fn as(self: DBusProxy, name: []const u8) DBusProxy {
     return DBusProxy.init(self.connection, self.allocator, .{
         .destination = self.destination,
@@ -67,6 +77,7 @@ const SimplifiedCallOptions = struct {
     feedback: DBusPendingResponse.Feedback = .{ .store = null },
 };
 
+/// Calls a method with proxy params.
 pub fn call(self: DBusProxy, member: []const u8, values: anytype, options: SimplifiedCallOptions) !?*DBusPendingResponse {
     if (self.object_path == null) @panic("Object path is null");
     if (self.interface == null) @panic("Interface is null");
@@ -75,7 +86,7 @@ pub fn call(self: DBusProxy, member: []const u8, values: anytype, options: Simpl
         .destination = self.destination,
         .interface = self.interface.?,
         .path = self.object_path.?,
-        .method = member,
+        .member = member,
         .sender = self.sender,
         .flags = options.flags,
         .feedback = options.feedback,

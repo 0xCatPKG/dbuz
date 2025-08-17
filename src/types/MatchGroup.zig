@@ -1,3 +1,7 @@
+//! MatchGroup is a interface for match handling.
+//! It uses compile time reflection to generate the necessary code.
+//! See docs/MatchGroups.md for more information.
+
 const std = @import("std");
 
 const Self = @This();

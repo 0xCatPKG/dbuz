@@ -1,3 +1,8 @@
+//! Interface for implementing DBus interfaces
+//! This interface provides a convenient way to implement DBus interfaces, by using compile time reflection.
+//! See docs/Interfaces.md for more information about how to implement interfaces using this dbuz.
+
+
 const std = @import("std");
 
 const Self = @This();
@@ -42,7 +47,7 @@ pub const VTable = struct {
     /// If property has exactly 2 params, it considered writable
     /// It is illegal to have a property with no return and no input params
     property: *const fn (*anyopaque, *DBusConnection, *DBusMessage, []const u8, DBusProperties.Action) DBusProperties.Error!void,
-    all_properties: *const fn (*anyopaque, *DBusConnection, *DBusMessage) DBusConnection.Error!void,
+    all_properties: *const fn (*anyopaque, *DBusConnection, *DBusMessage) DBusProperties.Error!void,
 
     deinit: *const fn (*anyopaque) void,
 };
@@ -105,6 +110,7 @@ pub fn init(
             self.allocator.destroy(self);
         }
 
+        /// Codegen function for handling method calls using the compile time reflection.
         pub fn route_call(erased_impl: *anyopaque, conn: *DBusConnection, msg: *DBusMessage) Error!void {
             const self: *IFaceSelf = @alignCast(@ptrCast(erased_impl));
             const typeinfo = @typeInfo(InterfacePrototype);
@@ -123,6 +129,7 @@ pub fn init(
                         switch (decl_info) {
                             else => continue,
                             .@"fn" => |func| {
+                                // Method candidates should be public fn's with the first argument being *InterfacePrototype and all other arguments being dbus serializables. Optionally last argument can be *DBusMessage.
                                 comptime if (!DBusIntrospectable.isMethodNameValid(decl_.name)) continue;
                                 comptime if (func.params.len == 0) @compileError("Invalid method prototype for " ++ decl_.name ++ ": methods should take *" ++ @typeName(InterfacePrototype) ++ " as the first argument at least");
                                 comptime if (func.params[0].type.? != *InterfacePrototype) @compileError("Invalid method prototype for " ++ @typeName(decl) ++ ": First argument should be *" ++ @typeName(InterfacePrototype));
@@ -138,6 +145,7 @@ pub fn init(
                                     comptime if (!dbus_types.isTypeSerializable(param.type.?) and param.type.? != *DBusMessage) @compileError("Unserializable type " ++ @typeName(param.type.?) ++ " in method " ++ decl_.name ++  "at position " ++ std.fmt.comptimePrint("{d}", .{i}));
                                 }
 
+                                // If method name matches member in message, this method is a method call we are looking for.
                                 if (std.mem.eql(u8, DBusIntrospectable.methodName(decl_.name), msg.member.?)) {
                                     comptime var read_args_slice: [func.params.len-1-(if (has_message_arg) 1 else 0)]type = undefined;
                                     inline for (func.params[1..], 0..) |param, i| {
@@ -175,6 +183,7 @@ pub fn init(
             }
         }
 
+        /// For DBusProperties. TODO: Adequate documentation
         pub fn property(erased_impl: *anyopaque, conn: *DBusConnection, msg: *DBusMessage, property_name: []const u8, action: DBusProperties.Action) DBusProperties.Error!void {
             const self: *IFaceSelf = @alignCast(@ptrCast(erased_impl));
             const typeinfo = @typeInfo(InterfacePrototype);
@@ -255,6 +264,7 @@ pub fn init(
             return DBusProperties.Error.NoSuchProperty;
         }
 
+        /// For DBusProperties. TODO: Adequate documentation
         pub fn all_properties(erased_impl: *anyopaque, conn: *DBusConnection, msg: *DBusMessage) DBusConnection.Error!void {
 
             const self: *IFaceSelf = @alignCast(@ptrCast(erased_impl));
@@ -366,10 +376,12 @@ pub fn init(
     };
 }
 
+/// Sets the introspection XML for this interface.
 pub inline fn setIntrospectable(self: *Self, xml: ?[]const u8) void {
     self.introspectable = xml;
 }
 
+/// Broadcasts a signal from this interface.
 pub fn broadcast(self: Self, path: []const u8, signal_name: []const u8, data: anytype, allocator: std.mem.Allocator) !void {
     return self.conn.broadcast(.{
         .interface = self.interface,

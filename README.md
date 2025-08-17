@@ -57,92 +57,10 @@ pub fn main() !void {
 }
 ```
 
-### Calling dbus standard methods
+## Handling method calls and signals
 
-NOTICE! You must avoid calling blocking methods in pollers, as they will block until timeout is reached.
-
-```zig
-const std = @import("std");
-const dbuz = @import("dbuz");
-
-pub fn main() !void {
-    const allocator = std.heap.page_allocator;
-
-    /// Create connection to D-Bus session bus
-    const connection = try dbuz.connect(allocator, .{});
-    defer connection.deinit();
-
-    const poll_cond, const poll_thread =
-    try dbuz.spawnPollingThread(connection, allocator);
-
-    defer allocator.destroy(poll_cond);
-    defer poll_thread.join();
-    defer poll_cond.* = false;
-
-    const names = try connection.dbus().ListNames();
-    for (names) |name| { // Notice, there name is not []const u8, but a custom DBusMessage struct
-        std.debug.print("Name: {s}\n", .{name.value});
-        name.deinit(allocator);
-    }
-
-    // Caller owns memory, so we free it manually
-    allocator.free(names);
-}
-```
-
-### Calling methods and waiting
-```zig
-const std = @import("std");
-const dbuz = @import("dbuz");
-const DBusString = dbuz.types.DBusString;
-
-pub fn main() !void {
-    const allocator = std.heap.page_allocator;
-
-    /// Create connection to D-Bus session bus
-    const connection = try dbuz.connect(allocator, .{});
-    defer connection.deinit();
-
-    const poll_cond, const poll_thread =
-    try dbuz.spawnPollingThread(connection, allocator);
-
-    defer allocator.destroy(poll_cond);
-    defer poll_thread.join();
-    defer poll_cond.* = false;
-
-    const somestr = DBusString { .value = "Hello World!" };
-    const someint: i32 = 42;
-    const somebool: bool = true;
-
-    const future = connection.call(.{
-        .destination = "org.example.Test",
-        .path = "/org/example/Test",
-        .interface = "org.example.Interface",
-        .member = "Somemethod",
-    }, .{somestr, someint, somebool}, allocator) orelse unreachable;
-    // Future in case if call is passed without
-    // .flags = .{
-    //     .no_reply = true,
-    // },
-    // will always return pointer to a DBusPendingResponse or an error
-
-    // Second argument in call method is a tuple of values, library generates code for serialization at comptime using compile time reflection
-
-    // There it can't return null unless call options has it's .feedback set to .call\
-    // Reply is owned by future, when all references to it are dropped, it will be freed
-    const reply = try future.wait(.{}) orelse unreachable;
-    const x, const y, const z = try reply.read(struct{i32, DBusString, bool}, allocator);
-    // Method above reads from DBusMessage values and returns type specified in first argument, allocations are done by allocator passed in second argument
-
-    y.deinit(allocator);
-}
-
-
-}
-```
-
-### Example of publishing interfaces and names
-TODO
+Information about handling method calls and signals in dbuz may be found in
+[Interfaces](docs/Interfaces.md) and [MatchGroups](docs/MatchGroups.md)
 
 ## Serialization rules
 dbuz serializes native types using compile time reflection. Following mapping exists:

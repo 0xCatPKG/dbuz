@@ -1,4 +1,4 @@
-//! DBus Message implementation
+//! Message abstraction for DBus communication.
 
 const std = @import("std");
 const dbus_types = @import("dbus_types.zig");

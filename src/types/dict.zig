@@ -8,7 +8,10 @@ const String = dbus_types.String;
 const ObjectPath = dbus_types.ObjectPath;
 const Signature = dbus_types.Signature;
 
+/// Creates a new HashMap from types K and V. HashMaps created with this function are guaranteed to be serializable and can be used in DBus messages.
 pub fn from(comptime K: type, comptime V: type) type {
+    if (!dbus_types.isTypeSerializable(K)) @panic("K is not dbus serializable value");
+    if (!dbus_types.isTypeSerializable(V)) @panic("V is not dbus serializable value");
     return std.hash_map.HashMap(K, V, struct {
         pub const hash = getHashFn(K, @This());
         pub const eql = getEqlFn(K, @This());
@@ -38,6 +41,7 @@ fn getEqlFn(comptime K: type, comptime Context: type) (fn (Context, K, K) bool) 
     }.eql;
 }
 
+/// Deinits the HashMap and frees all memory recursively.
 pub fn cleanDeinit(dict: anytype, allocator: std.mem.Allocator) void {
     var it = dict.iterator();
     while (it.next()) |entry| {

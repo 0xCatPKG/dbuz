@@ -1,5 +1,3 @@
-//! DBus is a synchronous interface proxy for org.freedesktop.DBus.
-
 const std = @import("std");
 
 const dbuz = @import("../dbuz.zig");

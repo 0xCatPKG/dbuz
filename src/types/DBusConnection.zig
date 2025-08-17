@@ -807,12 +807,10 @@ pub fn getName(self: *DBusConnection, name: []const u8) ?*DBusName {
     return null;
 }
 
-const RequestNameOptions = struct {
-    flags: DBusCommon.RequestNameFlags = .{},
-    callbacks: ?DBusName.Callbacks = null,
-};
-
-pub fn requestName(self: *DBusConnection, name: []const u8, options: RequestNameOptions) (Error || DBusName.Error)!*DBusName {
+/// Request a name on the bus. This method should never be used with DBus Activation, as interface registrations are racy in that case. If you need to implement DBus activatable service, please create a DBusName manually and then add it to the connection using the `addName` method.
+///
+/// This method is also should be never called inside the polling loop, as it will wait for reply from the bus.
+pub fn requestName(self: *DBusConnection, name: []const u8, options: DBusName.RequestNameOptions) (Error || DBusName.Error)!*DBusName {
     if (self.hasName(name)) return DBusName.Error.AlreadyExists;
 
     const name_obj = blk: {
@@ -832,6 +830,7 @@ pub fn requestName(self: *DBusConnection, name: []const u8, options: RequestName
     return name_obj.ref();
 }
 
+/// Releases the name from the bus, and don't waits for reply.
 pub fn releaseName(self: *DBusConnection, name: *DBusName) void {
     _ = self.call(.{
         .destination = "org.freedesktop.DBus",
@@ -868,6 +867,7 @@ pub fn nameLost(self: *DBusConnection, name: []const u8) void {
     }
 }
 
+/// Helper function that creates a proxy object that points to the target name.
 pub fn proxy(self: *DBusConnection, target_name: []const u8, allocator: std.mem.Allocator, options: DBusProxy.Options) DBusProxy {
     var opts: DBusProxy.Options = options;
     opts.destination = target_name;
