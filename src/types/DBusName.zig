@@ -186,12 +186,17 @@ pub const RequestNameOptions = struct {
 };
 
 /// Synchronously requests the name from the bus and then returns result. That method should be never called from polling loop, as it waits until bus response.
-pub fn request(self: *Self, options: RequestNameOptions) Error!void {
+pub fn request(self: *Self, options: RequestNameOptions) (error{Timeout, ConnectionLost} || Error)!void {
     if (options.callbacks) |cb| self.callbacks = cb;
 
     // TODO: Lower error set to be adequate here
     self.conn.dbus().RequestName(self.name, options.flags) catch |err| switch (err) {
-        Error.AlreadyExists...Error.NameNotValid, error.Timeout, error.ConnectionLost => return err,
-        else => @panic("Unexpected error"),
+        Error.AlreadyExists => return Error.AlreadyExists,
+        Error.AlreadyOwned => return Error.AlreadyOwned,
+        Error.UnexpectedError => return Error.UnexpectedError,
+        Error.Queued => return Error.Queued,
+        error.Timeout => return error.Timeout,
+        error.ConnectionLost => return error.ConnectionLost,
+        else => @panic("Unexpected error in DBusName.request")
     };
 }

@@ -836,7 +836,7 @@ pub fn releaseName(self: *DBusConnection, name: *DBusName) void {
         .destination = "org.freedesktop.DBus",
         .path = "/org/freedesktop/DBus",
         .interface = "org.freedesktop.DBus",
-        .method = "ReleaseName",
+        .member = "ReleaseName",
         .flags = .{ .no_reply = true }
     }, .{String{.value = name.name}}, self.allocator) catch {};
 
