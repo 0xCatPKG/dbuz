@@ -389,7 +389,7 @@ pub fn update(self: *DBusConnection, blocking: bool) Error!void {
                     self.allocator.destroy(message);
                     continue;
                 }
-                {
+                names_scope: {
                     self.names.mutex.lock();
                     defer self.names.mutex.unlock();
 
@@ -398,6 +398,7 @@ pub fn update(self: *DBusConnection, blocking: bool) Error!void {
                     while (it.next()) |entry| {
                         if (std.mem.eql(u8, entry.key_ptr.*, message.destination.?)) {
                             entry.value_ptr.*.routeMethodCall(message) catch |err| {
+                                if (err == error.Unhandled) break :names_scope;
                                 logger.err("Error routing call: {s}", .{@errorName(err)});
                             };
                             continue :next;
@@ -408,10 +409,11 @@ pub fn update(self: *DBusConnection, blocking: bool) Error!void {
                     self.global_objects.mutex.lock();
                     defer self.global_objects.mutex.unlock();
 
-                    if (self.global_objects.map.get(message.path.?)) |list| {
+                    if (self.global_objects.map.get(message.path.?)) |list| global_scope: {
                         for (list.items) |interface| {
                             if (std.mem.eql(u8, interface.interface, message.interface.?)) {
                                 interface.vtable.route_call(interface.ptr, self, message) catch |err| {
+                                    if (err == error.Unhandled) break :global_scope;
                                     logger.err("Error routing call: {s}", .{@errorName(err)});
                                 };
                                 continue :next;
@@ -419,10 +421,11 @@ pub fn update(self: *DBusConnection, blocking: bool) Error!void {
                         }
                     }
 
-                    if (self.global_objects.map.get("*")) |list| {
+                    if (self.global_objects.map.get("*")) |list| wildcard_scope: {
                         for (list.items) |interface| {
                             if (std.mem.eql(u8, interface.interface, message.interface.?)) {
                                 interface.vtable.route_call(interface.ptr, self, message) catch |err| {
+                                    if (err == error.Unhandled) break :wildcard_scope;
                                     logger.err("Error routing call: {s}", .{@errorName(err)});
                                 };
                                 continue :next;
