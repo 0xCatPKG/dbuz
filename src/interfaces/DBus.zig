@@ -67,7 +67,7 @@ pub const RequestNameFlags = packed struct {
 
 /// Requests a name on the bus.
 ///
-/// NOTE: Names created by this method are not automatically added to the connection's accounting
+/// NOTE: Names created by this method are not automatically added to the connection
 pub fn RequestName(self: DBusProxy, name: []const u8, flags: RequestNameFlags) !void {
     const _flags: u32 = @bitCast(flags);
     const _name: String = .{ .value = name };
