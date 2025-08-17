@@ -18,8 +18,6 @@ pub const Options = struct {
     interface: ?[]const u8 = null,
     object_path: ?[]const u8 = null,
     sender: ?[]const u8 = null,
-
-    check_presence: bool = true,
 };
 
 connection: *DBusConnection,
@@ -47,7 +45,6 @@ pub fn at(self: DBusProxy, path: []const u8) DBusProxy {
         .destination = self.destination,
         .interface = self.interface,
         .object_path = path,
-        .check_presence = false,
     });
 }
 
@@ -57,7 +54,6 @@ pub fn to(self: DBusProxy, name: []const u8) DBusProxy {
         .destination = self.destination,
         .interface = name,
         .object_path = self.object_path,
-        .check_presence = false,
     });
 }
 
@@ -68,7 +64,6 @@ pub fn as(self: DBusProxy, name: []const u8) DBusProxy {
         .interface = self.interface,
         .object_path = self.object_path,
         .sender = name,
-        .check_presence = false,
     });
 }
 
@@ -95,5 +90,5 @@ pub fn call(self: DBusProxy, member: []const u8, values: anytype, options: Simpl
 
 /// Checks if name is on the bus
 pub fn check(self: DBusProxy) !void {
-    try self.connection.dbus().nameHasOwner(self.destination) orelse return error.NoSuchName;
+    if (!try self.connection.dbus().NameHasOwner(self.destination)) return error.NoSuchName;
 }

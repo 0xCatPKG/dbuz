@@ -92,3 +92,8 @@ test "dbus_multithreaded_system_connect" {
     try testing.expect(conn.unique_name != null);
 
 }
+
+test "evaluate all" {
+    testing.refAllDeclsRecursive(dbuz);
+    return;
+}

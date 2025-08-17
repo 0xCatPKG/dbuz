@@ -173,8 +173,12 @@ pub const interfaces = struct {
 };
 
 pub const errors = struct {
-    pub const DBusError = types.DBusConnection.Error;
-    pub const DBusLogicError = types.DBusConnection.LogicError;
+    pub const DBusConnectionError = types.DBusConnection.Error;
+    pub const DBusNameError = types.DBusName.Error;
+    pub const DBusInterfaceError = types.DBusInterface.Error;
+    pub const DBusSerializationError = types.DBusMessage.SerializationError;
+    pub const DBusDeserializationError = types.DBusMessage.DeserializationError;
+    pub const DBusError = interfaces.DBusCommon.Error;
 };
 
 const std = @import("std");

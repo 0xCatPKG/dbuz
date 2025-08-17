@@ -43,6 +43,7 @@ pub const Error = error{
     InvalidInterfaceName,
     InvalidServiceName,
     BadMessage,
+    Timeout,
 } || DBusMessage.SerializationError || DBusMessage.DeserializationError || Transport.Error;
 
 pub const DBusConnection = @This();
@@ -823,8 +824,13 @@ pub fn requestName(self: *DBusConnection, name: []const u8, options: DBusName.Re
         break :blk name_obj;
     };
     errdefer self.removeName(name_obj) catch {};
-    self.dbus().RequestName(name, options.flags) catch |err| {
-        if (err != DBusName.Error.Queued) return err;
+    self.dbus().RequestName(name, options.flags) catch |err| switch (err) {
+        else => @panic("Unhandled error type!"),
+        DBusName.Error.AlreadyExists => return DBusName.Error.AlreadyExists,
+        DBusName.Error.AlreadyOwned =>  return DBusName.Error.AlreadyExists,
+        DBusName.Error.Queued => {},
+        AllocatorError.OutOfMemory => return AllocatorError.OutOfMemory,
+        error.Timeout => return error.Timeout,
     };
 
     return name_obj.ref();

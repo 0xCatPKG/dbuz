@@ -825,7 +825,7 @@ fn typeAlignment(comptime T: type) u26 {
     };
 }
 
-pub fn clone(self: *const Self, allocator: std.mem.Allocator) Self.Error!Self {
+pub fn clone(self: *const Self, allocator: std.mem.Allocator) AllocatorError!Self {
     var new = Self{
         .allocator = allocator,
         .path = if (self.path) |path| try allocator.dupe(u8, path) else null,
@@ -835,13 +835,13 @@ pub fn clone(self: *const Self, allocator: std.mem.Allocator) Self.Error!Self {
         .sender = if (self.sender) |sender| try allocator.dupe(u8, sender) else null,
         .member = if (self.member) |member| try allocator.dupe(u8, member) else null,
         .flags = self.flags,
-        .headers = cloneArrayList(std.ArrayList(Header), self.headers, allocator),
+        .headers = try cloneArrayList(std.ArrayList(Header), self.headers, allocator),
         .signature = try cloneArrayList(ArrayListBuffer, self.signature, allocator),
         .message_type = self.message_type,
         ._reader = null,
         .reply_serial = self.reply_serial,
         .serial = self.serial,
-        .unix_fds = cloneArrayList(std.ArrayList(i32), self.unix_fds, allocator),
+        .unix_fds = try cloneArrayList(std.ArrayList(i32), self.unix_fds, allocator),
         .payload = try cloneArrayList(ArrayListBuffer, self.payload, allocator),
     };
     if (self._reader) |reader| {
@@ -854,7 +854,7 @@ pub fn clone(self: *const Self, allocator: std.mem.Allocator) Self.Error!Self {
     return new;
 }
 
-fn cloneArrayList(comptime T: type, src: T, allocator: std.mem.Allocator) !T {
+fn cloneArrayList(comptime T: type, src: T, allocator: std.mem.Allocator) AllocatorError!T {
     var arrlist = T.init(allocator);
     errdefer arrlist.deinit();
     try arrlist.appendSlice(src.items);
