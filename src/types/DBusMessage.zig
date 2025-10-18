@@ -76,9 +76,9 @@ allocator: std.mem.Allocator,
 /// Message headers, should not be modified directly, use addHeader instead.
 headers: std.ArrayList(Header),
 
-payload: ArrayListBuffer,
-unix_fds: std.ArrayList(i32),
-signature: ArrayListBuffer,
+payload: ArrayListBuffer = .{},
+unix_fds: std.ArrayList(i32) = .{},
+signature: ArrayListBuffer = .{},
 
 message_type: Type = .INVALID,
 
@@ -107,7 +107,6 @@ _reader: ?struct {
         self.signature_stream.reset();
         self.payload_stream.reset();
     }
-
 } = null,
 
 /// Is it not recommended to call this function directly.
@@ -144,11 +143,11 @@ pub fn parseFromReader(allocator: std.mem.Allocator, bytes_reader: anytype, unix
     var headers_list = try std.ArrayList(Header).initCapacity(allocator, 4);
     var signature_buf = try ArrayListBuffer.initCapacity(allocator, 255);
     errdefer {
-        headers_list.deinit();
-        signature_buf.deinit();
+        headers_list.deinit(allocator);
+        signature_buf.deinit(allocator);
     }
 
-    var self: Self = .{ .allocator = allocator, .headers = headers_list, .payload = ArrayListBuffer.init(allocator), .unix_fds = std.ArrayList(i32).init(allocator), .signature = signature_buf };
+    var self: Self = .{ .allocator = allocator, .headers = headers_list };
 
     // Create signature streams for deserialization process
     // It is splitted to two streams, because we don't know endianess of the message before reading first byte.
@@ -163,14 +162,14 @@ pub fn parseFromReader(allocator: std.mem.Allocator, bytes_reader: anytype, unix
 
     // Rest of the header
     const length, const serial, const headers: []Header =
-    try self.deserializeValues(bytes_reader, struct { u32, u32, []Header }, allocator, header_signature_stream_2.reader(), if (byteorder == 'l') .little else .big, message_start_offset);
+        try self.deserializeValues(bytes_reader, struct { u32, u32, []Header }, allocator, header_signature_stream_2.reader(), if (byteorder == 'l') .little else .big, message_start_offset);
     defer allocator.free(headers);
 
     alignRead(bytes_reader, 8, message_start_offset) catch return DeserializationError.MessageTooShort;
     const payloadbuff = try allocator.alloc(u8, length);
     defer allocator.free(payloadbuff);
     _ = bytes_reader.read(payloadbuff) catch return DeserializationError.MessageTooShort;
-    try self.payload.appendSlice(payloadbuff);
+    try self.payload.appendSlice(self.allocator, payloadbuff);
     self.serial = serial;
 
     for (headers) |header| {
@@ -197,10 +196,10 @@ pub fn parseFromReader(allocator: std.mem.Allocator, bytes_reader: anytype, unix
                 self.sender = header.value.string.value;
             },
             @intFromEnum(Header.Name.SIGNATURE) => {
-                try self.signature.appendSlice(header.value.signature.value);
+                try self.signature.appendSlice(self.allocator, header.value.signature.value);
             },
             @intFromEnum(Header.Name.UNIX_FDS) => {
-                try self.unix_fds.appendSlice(unix_fds_alist.items[0..header.value.uint32]);
+                try self.unix_fds.appendSlice(self.allocator, unix_fds_alist.items[0..header.value.uint32]);
                 unix_fds_alist.replaceRangeAssumeCapacity(0, unix_fds_alist.items.len - header.value.uint32, unix_fds_alist.items[header.value.uint32..]);
             },
             else => {},
@@ -213,7 +212,7 @@ pub fn parseFromReader(allocator: std.mem.Allocator, bytes_reader: anytype, unix
         .signature_stream = std.io.fixedBufferStream(self.signature.items),
     };
 
-    try self.headers.appendSlice(headers);
+    try self.headers.appendSlice(self.allocator, headers);
     return self;
 }
 
@@ -223,11 +222,7 @@ pub fn parseFromReader(allocator: std.mem.Allocator, bytes_reader: anytype, unix
 pub fn read(self: *Self, comptime T: type, allocator: std.mem.Allocator) DeserializationError!T {
     std.debug.assert(self._reader != null);
     if (T == void) return {};
-    return self.deserializeValues(
-        self._reader.?.payload_stream.reader(),
-        T, allocator,
-        self._reader.?.signature_stream.reader(),
-        self._reader.?.byteorder, 0);
+    return self.deserializeValues(self._reader.?.payload_stream.reader(), T, allocator, self._reader.?.signature_stream.reader(), self._reader.?.byteorder, 0);
 }
 
 /// Writes a value (or the tuple of values) to the message payload or returns an error.
@@ -249,7 +244,7 @@ pub fn write(self: *Self, value: anytype) SerializationError!void {
         .@"struct" => |structinfo| {
             if (structinfo.is_tuple) {
                 inline for (value) |el| {
-                    try self.serializeValue(self.payload.writer(), el, 0);
+                    try self.serializeValue(self.payload.writer(self.allocator), el, 0);
                 }
                 try self.addSignature(signature);
                 return;
@@ -258,7 +253,7 @@ pub fn write(self: *Self, value: anytype) SerializationError!void {
         else => {},
     }
 
-    try self.serializeValue(self.payload.writer(), value, 0);
+    try self.serializeValue(self.payload.writer(self.allocator), value, 0);
     try self.addSignature(signature);
 }
 
@@ -305,9 +300,9 @@ inline fn deserializeValues(self: Self, reader: anytype, comptime T: type, alloc
                                     .pointer => |ptrinfo| {
                                         if (ptrinfo.size != .slice) @compileError("Unexpected non-sentiel pointer inside errdefer at deserializeValues");
                                         allocator.free(val);
-                                    }
+                                    },
                                 }
-                            }
+                            },
                         }
                     }
                 }
@@ -411,8 +406,8 @@ fn deserializeValue(self: Self, comptime T: type, reader: anytype, allocator: st
 
                         var buffstream = std.io.fixedBufferStream(buff);
                         const buffreader = buffstream.reader();
-                        var slice: std.ArrayList(ptrinfo.child) = std.ArrayList(ptrinfo.child).init(allocator);
-                        errdefer slice.deinit();
+                        var slice: std.ArrayList(ptrinfo.child) = std.ArrayList(ptrinfo.child){};
+                        errdefer slice.deinit(self.allocator);
 
                         var i: u32 = 0;
                         while (true) : (i += 1) {
@@ -422,19 +417,18 @@ fn deserializeValue(self: Self, comptime T: type, reader: anytype, allocator: st
                                     else => return err,
                                 }
                             };
-                            slice.append(val) catch return DeserializationError.MessageTooShort;
+                            slice.append(self.allocator, val) catch return DeserializationError.MessageTooShort;
                         }
-                        return slice.toOwnedSlice();
+                        return slice.toOwnedSlice(self.allocator);
                     } else @compileError("Invalid type for array deserialization");
                 },
                 .@"struct" => |structinfo| {
-
                     if (isDict(T)) {
                         const KV = @field(T, "KV");
-                        const K = @FieldType(KV, "key");// @TypeOf(@field(KV, "key"));
-                        const V = @FieldType(KV, "value");// @TypeOf(@field(KV, "value"));
+                        const K = @FieldType(KV, "key"); // @TypeOf(@field(KV, "key"));
+                        const V = @FieldType(KV, "value"); // @TypeOf(@field(KV, "value"));
 
-                        const slice = try self.deserializeValue([]KV, reader, allocator, byteorder, depth+1, align_offset);
+                        const slice = try self.deserializeValue([]KV, reader, allocator, byteorder, depth + 1, align_offset);
                         defer allocator.free(slice);
 
                         var map = T.init(allocator);
@@ -444,22 +438,22 @@ fn deserializeValue(self: Self, comptime T: type, reader: anytype, allocator: st
                                 switch (K) {
                                     String, Signature, ObjectPath => entry.key_ptr.deinit(allocator),
                                     else => {
-                                        switch(@typeInfo(K)) {
+                                        switch (@typeInfo(K)) {
                                             else => {},
-                                            .@"pointer" => {
+                                            .pointer => {
                                                 allocator.free(entry.key_ptr.*);
-                                            }
+                                            },
                                         }
                                     },
                                 }
                                 switch (V) {
                                     String, Signature, ObjectPath => entry.value_ptr.deinit(allocator),
                                     else => {
-                                        switch(@typeInfo(V)) {
+                                        switch (@typeInfo(V)) {
                                             else => {},
-                                            .@"pointer" => {
+                                            .pointer => {
                                                 allocator.free(entry.value_ptr.*);
-                                            }
+                                            },
                                         }
                                     },
                                 }
@@ -468,7 +462,6 @@ fn deserializeValue(self: Self, comptime T: type, reader: anytype, allocator: st
                             entry.value_ptr.* = el.value;
                         }
                         return map;
-
                     } else {
                         var s: T = undefined;
                         alignRead(reader, 8, align_offset) catch return DeserializationError.MessageTooShort;
@@ -502,7 +495,7 @@ fn deserializeValue(self: Self, comptime T: type, reader: anytype, allocator: st
                                     const fieldval = try self.deserializeValue(ufield.type, reader, allocator, byteorder, depth + 1, align_offset);
                                     return @unionInit(T, ufield.name, fieldval);
                                 }
-                            }
+                            },
                         }
                     }
                     return DeserializationError.VariantUnexpectedSignature;
@@ -536,10 +529,10 @@ pub fn deinit(self: *Self) void {
             else => {},
         }
     }
-    self.payload.deinit();
-    self.headers.deinit();
-    self.unix_fds.deinit();
-    self.signature.deinit();
+    self.payload.deinit(self.allocator);
+    self.headers.deinit(self.allocator);
+    self.unix_fds.deinit(self.allocator);
+    self.signature.deinit(self.allocator);
 }
 
 /// Adds header to the message. Dupes value if needed.
@@ -547,39 +540,17 @@ pub fn addHeader(self: *Self, name: Header.Name, value: Header.ValueType) !void 
     std.debug.assert(self._reader == null);
     std.debug.assert(name != .INVALID);
     switch (value) {
-        else => try self.headers.append(.{ .name = @intFromEnum(name), .value = value }),
+        else => try self.headers.append(self.allocator, .{ .name = @intFromEnum(name), .value = value }),
         .string => |s| {
-            try self.headers.append(.{ .name = @intFromEnum(name), .value =
-                .{
-                    .string = .{
-                        .value = try self.allocator.dupe(u8, s.value),
-                        .ownership = true
-                    }
-                }
-            });
+            try self.headers.append(self.allocator, .{ .name = @intFromEnum(name), .value = .{ .string = .{ .value = try self.allocator.dupe(u8, s.value), .ownership = true } } });
         },
         .signature => |s| {
-            try self.headers.append(.{ .name = @intFromEnum(name), .value =
-                .{
-                    .signature = .{
-                        .value = try self.allocator.dupe(u8, s.value),
-                        .ownership = true
-                    }
-                }
-            });
+            try self.headers.append(self.allocator, .{ .name = @intFromEnum(name), .value = .{ .signature = .{ .value = try self.allocator.dupe(u8, s.value), .ownership = true } } });
         },
         .object_path => |o| {
-            try self.headers.append(.{ .name = @intFromEnum(name), .value =
-                .{
-                    .object_path = .{
-                        .value = try self.allocator.dupe(u8, o.value),
-                        .ownership = true
-                    }
-                }
-            });
-        }
+            try self.headers.append(self.allocator, .{ .name = @intFromEnum(name), .value = .{ .object_path = .{ .value = try self.allocator.dupe(u8, o.value), .ownership = true } } });
+        },
     }
-
 }
 
 /// Finalizes the message by combining all headers and payload into a single buffer.
@@ -619,16 +590,15 @@ pub fn finalize(self: *Self) SerializationError![]const u8 {
     }
 
     var res_payload = try std.ArrayList(u8).initCapacity(self.allocator, 12 + 256 + self.payload.items.len);
-    try self.serializeValue(res_payload.writer(), (struct { u8, u8, u8, u8, u32, u32, []Header }){ 'l', @intFromEnum(self.message_type), self.flags, 1, @truncate(self.payload.items.len), self.serial, self.headers.items }, 0);
-    try alignPayload(res_payload.writer(), 8);
-    try res_payload.appendSlice(self.payload.items);
-    return res_payload.toOwnedSlice();
+    try self.serializeValue(res_payload.writer(self.allocator), (struct { u8, u8, u8, u8, u32, u32, []Header }){ 'l', @intFromEnum(self.message_type), self.flags, 1, @truncate(self.payload.items.len), self.serial, self.headers.items }, 0);
+    try alignPayload(res_payload.writer(self.allocator), 8);
+    try res_payload.appendSlice(self.allocator, self.payload.items);
+    return res_payload.toOwnedSlice(self.allocator);
 }
 
 inline fn addSignature(self: *Self, signature: []const u8) AllocatorError!void {
     try self.signature.fixedWriter().writeAll(signature);
 }
-
 
 /// Serializes a given value according to the DBus serialization rules.
 /// It is a **Checked Illegal Behavior** to call this function with depth greater than 64.
@@ -736,7 +706,6 @@ fn serializeValue(self: *Self, writer: anytype, value: anytype, depth: u8) Seria
                     } else {
                         try self.serializeValue(writer, Signature{ .value = "" }, depth + 1);
                     }
-
                 },
                 else => @compileError("Unsupported type " ++ @typeName(@TypeOf(value)) ++ " in DBusMessage.serializeValue"),
             }
@@ -749,6 +718,7 @@ fn alignPayload(writer: anytype, alignment: usize) !void {
     const size = switch (@TypeOf(writer.context)) {
         *ArrayListBuffer => writer.context.items.len,
         *std.io.FixedBufferStream([]u8) => writer.context.pos,
+        ArrayListBuffer.WriterContext => writer.context.self.items.len,
         else => @compileError("Unsupported type " ++ @typeName(@TypeOf(writer.context)) ++ " in alignPayload"),
     };
     const padding = std.mem.alignForward(usize, size, alignment) - size;
@@ -760,7 +730,7 @@ fn readerGetPos(reader: anytype) usize {
         *ArrayListBuffer => reader.context.items.len,
         *std.io.FixedBufferStream([]u8) => reader.context.pos,
         *const anyopaque => blk: {
-            const ctx: *const *std.io.FixedBufferStream([:0]u8) = @alignCast(@ptrCast(reader.context));
+            const ctx: *const *std.io.FixedBufferStream([:0]u8) = @ptrCast(@alignCast(reader.context));
             break :blk ctx.*.pos;
         },
         else => @compileError("Unsupported type " ++ @typeName(@TypeOf(reader.context)) ++ " in alignRead"),
@@ -771,7 +741,7 @@ fn readerSetPos(reader: anytype, pos: usize) void {
     return switch (@TypeOf(reader.context)) {
         *std.io.FixedBufferStream([]u8) => reader.context.pos = pos,
         *const anyopaque => {
-            const ctx: *const *std.io.FixedBufferStream([:0]u8) = @alignCast(@ptrCast(reader.context));
+            const ctx: *const *std.io.FixedBufferStream([:0]u8) = @ptrCast(@alignCast(reader.context));
             ctx.*.pos = pos;
         },
         else => @compileError("Unsupported type " ++ @typeName(@TypeOf(reader.context)) ++ " in alignRead"),
@@ -783,7 +753,7 @@ fn readerGetMax(reader: anytype) usize {
         *ArrayListBuffer => reader.context.items.len,
         *std.io.FixedBufferStream([]u8) => reader.context.buffer.len,
         *const anyopaque => blk: {
-            const ctx: *const *std.io.FixedBufferStream([:0]u8) = @alignCast(@ptrCast(reader.context));
+            const ctx: *const *std.io.FixedBufferStream([:0]u8) = @ptrCast(@alignCast(reader.context));
             break :blk ctx.*.buffer.len;
         },
         else => @compileError("Unsupported type " ++ @typeName(@TypeOf(reader.context)) ++ " in alignRead"),
@@ -809,19 +779,15 @@ fn typeAlignment(comptime T: type) u26 {
             .bool => 4,
             .float => 8,
             .int => |intinfo| blk: {
-                break :blk if (intinfo.bits <= 8) 1
-                else if (intinfo.bits <= 16) std.meta.alignment(u16)
-                else if (intinfo.bits <= 32) std.meta.alignment(u32)
-                else if (intinfo.bits <= 64) std.meta.alignment(u64)
-                else @compileError("integer too large");
+                break :blk if (intinfo.bits <= 8) 1 else if (intinfo.bits <= 16) std.meta.alignment(u16) else if (intinfo.bits <= 32) std.meta.alignment(u32) else if (intinfo.bits <= 64) std.meta.alignment(u64) else @compileError("integer too large");
             },
             .pointer => |ptrinfo| blk: {
                 if (ptrinfo.size != .slice) @compileError("Only slices are supported");
                 break :blk 4;
             },
             .@"union" => 1,
-            .@"struct" => 8
-        }
+            .@"struct" => 8,
+        },
     };
 }
 

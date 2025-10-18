@@ -57,7 +57,7 @@ pub const IntrospectableCtx = struct {
 };
 
 pub fn init(userdata: *anyopaque, allocator: std.mem.Allocator) anyerror!DBusIntrospectable {
-    const ctx: *IntrospectableCtx = @alignCast(@ptrCast(userdata));
+    const ctx: *IntrospectableCtx = @ptrCast(@alignCast(userdata));
     const self = DBusIntrospectable{
         .ctx = ctx,
         .allocator = allocator,
@@ -76,7 +76,7 @@ pub fn @"method@Introspect"(self: *DBusIntrospectable, message: *DBusMessage) !S
     defer self.conn.names.mutex.unlock();
     defer self.conn.global_objects.mutex.unlock();
 
-    const key = try std.fmt.allocPrint(self.allocator, "{s}@{s}", .{message.path.?, message.destination.?});
+    const key = try std.fmt.allocPrint(self.allocator, "{s}@{s}", .{ message.path.?, message.destination.? });
     errdefer self.allocator.free(key);
 
     if (self.ctx.introspection_cache.get(key)) |s| {
@@ -89,14 +89,14 @@ pub fn @"method@Introspect"(self: *DBusIntrospectable, message: *DBusMessage) !S
         if (name) |nam| {
             nam.objects.mutex.lock();
             defer nam.objects.mutex.unlock();
-            const introspection = String{.value = try self.introspector(nam.objects.map, message.path.?), .ownership = true};
+            const introspection = String{ .value = try self.introspector(nam.objects.map, message.path.?), .ownership = true };
             errdefer introspection.deinit(self.allocator);
             try self.ctx.introspection_cache.put(key, introspection);
             return introspection;
         }
     }
 
-    const introspection = String{.value = try self.introspector(null, message.path.?), .ownership = true};
+    const introspection = String{ .value = try self.introspector(null, message.path.?), .ownership = true };
     errdefer introspection.deinit(self.allocator);
     try self.ctx.introspection_cache.put(key, introspection);
     return introspection;
@@ -116,7 +116,7 @@ fn traverseStringHashmap(self: *DBusIntrospectable, map: std.StringHashMap(std.A
         traversed_nodes.put(child_node_name, {}) catch unreachable;
         const child_node_tag = try std.fmt.allocPrint(self.allocator, "<node name=\"{s}\"/>\n", .{child_node_name});
         defer self.allocator.free(child_node_tag);
-        try output.appendSlice(child_node_tag);
+        try output.appendSlice(self.allocator, child_node_tag);
     }
 }
 
@@ -126,21 +126,21 @@ fn addInterfaces(self: *DBusIntrospectable, list: ?std.ArrayList(DBusInterface),
             if (interface.hidden) continue;
             const interface_tag = try std.fmt.allocPrint(self.allocator, "<interface name=\"{s}\">\n", .{interface.interface});
             defer self.allocator.free(interface_tag);
-            try output.appendSlice(interface_tag);
-            try output.appendSlice(interface.introspection);
-            try output.appendSlice("</interface>\n");
+            try output.appendSlice(self.allocator, interface_tag);
+            try output.appendSlice(self.allocator, interface.introspection);
+            try output.appendSlice(self.allocator, "</interface>\n");
         }
     }
 }
 
 fn introspector(self: *DBusIntrospectable, map: ?std.StringHashMap(std.ArrayList(DBusInterface)), node: []const u8) ![]const u8 {
-    var result = std.ArrayList(u8).init(self.allocator);
-    defer result.deinit();
+    var result = try std.ArrayList(u8).initCapacity(self.allocator, 1024);
+    defer result.deinit(self.allocator);
 
     const node_tag = try std.fmt.allocPrint(self.allocator, "<node name=\"{s}\">\n", .{node});
     defer self.allocator.free(node_tag);
 
-    try result.appendSlice(node_tag);
+    try result.appendSlice(self.allocator, node_tag);
 
     try addInterfaces(self, self.conn.global_objects.map.get("*"), node, &result);
     try addInterfaces(self, self.conn.global_objects.map.get(node), node, &result);
@@ -164,8 +164,8 @@ fn introspector(self: *DBusIntrospectable, map: ?std.StringHashMap(std.ArrayList
         }
     }
 
-    try result.appendSlice("</node>\n");
-    return try result.toOwnedSlice();
+    try result.appendSlice(self.allocator, "</node>\n");
+    return try result.toOwnedSlice(self.allocator);
 }
 
 pub inline fn introspectInterface(comptime Interface: type) []const u8 {
@@ -173,10 +173,7 @@ pub inline fn introspectInterface(comptime Interface: type) []const u8 {
     const iface_info = @typeInfo(Interface).@"struct";
 
     for (iface_info.decls) |decl_| {
-        data = data ++ if (isMethodNameValid(decl_.name)) introspectMethodCall(Interface, decl_.name, @field(Interface, decl_.name))
-        else if (isSignalNameValid(decl_.name)) introspectSignal(Interface, decl_.name, @field(Interface, decl_.name))
-        else if (isPropertyNameValid(decl_.name)) introspectProperty(Interface, decl_.name, @field(Interface, decl_.name))
-        else "";
+        data = data ++ if (isMethodNameValid(decl_.name)) introspectMethodCall(Interface, decl_.name, @field(Interface, decl_.name)) else if (isSignalNameValid(decl_.name)) introspectSignal(Interface, decl_.name, @field(Interface, decl_.name)) else if (isPropertyNameValid(decl_.name)) introspectProperty(Interface, decl_.name, @field(Interface, decl_.name)) else "";
     }
 
     return data;
@@ -218,10 +215,9 @@ inline fn introspectMethodCall(comptime Interface: type, comptime name: []const 
                                 for (structinfo.fields) |field| {
                                     data = data ++ "<arg name=\"" ++ field.name ++ "\" type=\"" ++ dbus_types.guessSignature(field.type.?) ++ "\" direction=\"out\"/>\n";
                                 }
-                            }
-                            else data = data ++ "<arg name=\"out_" ++ dbus_types.guessSignature(fninfo.return_type.?) ++ "\" type=\"" ++ dbus_types.guessSignature(fninfo.return_type.?) ++ "\" direction=\"out\"/>\n";
+                            } else data = data ++ "<arg name=\"out_" ++ dbus_types.guessSignature(fninfo.return_type.?) ++ "\" type=\"" ++ dbus_types.guessSignature(fninfo.return_type.?) ++ "\" direction=\"out\"/>\n";
                         },
-                        .void => {}
+                        .void => {},
                     }
                 },
                 .error_union => |errorinfo| {
@@ -237,12 +233,11 @@ inline fn introspectMethodCall(comptime Interface: type, comptime name: []const 
                                 for (structinfo.fields) |field| {
                                     data = data ++ "<arg name=\"" ++ field.name ++ "\" type=\"" ++ dbus_types.guessSignature(field.type.?) ++ "\" direction=\"out\"/>\n";
                                 }
-                            }
-                            else data = data ++ "<arg name=\"out_" ++ dbus_types.guessSignature(errorinfo.payload) ++ "\" type=\"" ++ dbus_types.guessSignature(errorinfo.payload) ++ "\" direction=\"out\"/>\n";
+                            } else data = data ++ "<arg name=\"out_" ++ dbus_types.guessSignature(errorinfo.payload) ++ "\" type=\"" ++ dbus_types.guessSignature(errorinfo.payload) ++ "\" direction=\"out\"/>\n";
                         },
-                        .void => {}
+                        .void => {},
                     }
-                }
+                },
             }
 
             data = data ++ "</method>\n";
@@ -302,7 +297,7 @@ inline fn introspectProperty(comptime Interface: type, comptime name: []const u8
                             if (!dbus_types.isTypeSerializable(fninfo.return_type.?)) return "";
                             data = data ++ " type=\"" ++ dbus_types.guessSignature(fninfo.return_type.?) ++ "\"";
                         },
-                        .void => {}
+                        .void => {},
                     }
                 },
                 .error_union => |errorinfo| {
@@ -315,9 +310,9 @@ inline fn introspectProperty(comptime Interface: type, comptime name: []const u8
                             if (!dbus_types.isTypeSerializable(errorinfo.payload)) return "";
                             data = data ++ " type=\"" ++ dbus_types.guessSignature(errorinfo.payload) ++ "\"";
                         },
-                        .void => {}
+                        .void => {},
                     }
-                }
+                },
             }
             data = data ++ " access=\"" ++ (if (readwrite) "readwrite" else "read") ++ "\"/>\n";
         },
@@ -371,7 +366,7 @@ inline fn unwrapOptional(comptime T: type) type {
     const typeinfo = @typeInfo(T);
     switch (typeinfo) {
         else => return T,
-        .optional => |optional| return optional.child
+        .optional => |optional| return optional.child,
     }
     unreachable;
 }

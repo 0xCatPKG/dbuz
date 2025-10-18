@@ -1,16 +1,6 @@
+const BusType = union(enum) { Session: void, System: void, Path: []const u8, UnixFD: i32 };
 
-const BusType = union(enum) {
-    Session: void,
-    System: void,
-    Path: []const u8,
-    UnixFD: i32
-};
-
-const Options = struct {
-    bus: BusType = .Session,
-    enable_introspection: bool = true,
-    config: types.DBusConnection.Options = .{}
-};
+const Options = struct { bus: BusType = .Session, enable_introspection: bool = true, config: types.DBusConnection.Options = .{} };
 
 pub const ConnectionCreationError = error{
     BusNotAvailable,
@@ -60,8 +50,8 @@ fn getFDByBusType(bus: BusType, allocator: std.mem.Allocator) !i32 {
             break :blk std.net.connectUnixSocket(path) catch return error.ConnectionRefused;
         },
         .UnixFD => |fd| {
-            break :blk std.net.Stream{.handle = fd};
-        }
+            break :blk std.net.Stream{ .handle = fd };
+        },
     };
     return stream.handle;
 }
@@ -74,27 +64,15 @@ pub fn connect(allocator: std.mem.Allocator, options: Options) ConnectionCreatio
     errdefer connection.deinit();
 
     connection.connect() catch return error.ConnectionLost;
-    const reply = connection.call(.{
-        .destination = "org.freedesktop.DBus",
-        .path = "/org/freedesktop/DBus",
-        .interface = "org.freedesktop.DBus",
-        .member = "Hello",
-        .feedback = .{
-            .call = .{
-                .userdata = connection,
-                .method_reply = helloReply,
-                .method_error = helloError,
-            }
-        }
-    }, .{}, allocator) catch return error.ConnectionLost;
+    const reply = connection.call(.{ .destination = "org.freedesktop.DBus", .path = "/org/freedesktop/DBus", .interface = "org.freedesktop.DBus", .member = "Hello", .feedback = .{ .call = .{
+        .userdata = connection,
+        .method_reply = helloReply,
+        .method_error = helloError,
+    } } }, .{}, allocator) catch return error.ConnectionLost;
     defer reply.?.deinit();
 
     if (options.enable_introspection) {
-        connection.introspectable_ctx = .{
-            .allocator = connection.allocator,
-            .connection = connection,
-            .introspection_cache = .init(connection.allocator)
-        };
+        connection.introspectable_ctx = .{ .allocator = connection.allocator, .connection = connection, .introspection_cache = .init(connection.allocator) };
         _ = connection.registerInterface(interfaces.DBusIntrospectable, "org.freedesktop.DBus.Introspectable", "*", true, &connection.introspectable_ctx) catch return error.OutOfMemory;
     }
     _ = connection.registerInterface(interfaces.DBusProperties, "org.freedesktop.DBus.Properties", "*", true, connection) catch return error.OutOfMemory;
@@ -108,27 +86,25 @@ pub fn connect(allocator: std.mem.Allocator, options: Options) ConnectionCreatio
     return connection;
 }
 
-pub fn spawnPollingThread(conn: *types.DBusConnection, allocator: std.mem.Allocator) !struct{*bool, std.Thread} {
+pub fn spawnPollingThread(conn: *types.DBusConnection, allocator: std.mem.Allocator) !struct { *bool, std.Thread } {
     const running = try allocator.create(bool);
     running.* = true;
 
     errdefer allocator.destroy(running);
 
-    const thread = try std.Thread.spawn(.{}, poller, .{conn, running});
+    const thread = try std.Thread.spawn(.{}, poller, .{ conn, running });
     thread.setName("DBuzConnectionPoller") catch {};
-    return .{running, thread};
+    return .{ running, thread };
 }
 
 fn poller(conn: *types.DBusConnection, running: *bool) !void {
     logger.debug("Dispatcher thread started with thread id {d}", .{std.Thread.getCurrentId()});
 
-    var poll_fds = [_]std.posix.pollfd{
-        .{
-            .fd = conn.getFd(),
-            .events = std.posix.POLL.IN | std.posix.POLL.HUP,
-            .revents = 0,
-        }
-    };
+    var poll_fds = [_]std.posix.pollfd{.{
+        .fd = conn.getFd(),
+        .events = std.posix.POLL.IN | std.posix.POLL.HUP,
+        .revents = 0,
+    }};
 
     while (running.*) {
         const evcount = std.posix.poll(&poll_fds, 100) catch continue;
@@ -136,8 +112,7 @@ fn poller(conn: *types.DBusConnection, running: *bool) !void {
         if (poll_fds[0].revents & std.posix.POLL.HUP != 0) {
             conn.update(false) catch {};
             return;
-        }
-        else if (poll_fds[0].revents & std.posix.POLL.IN != 0) {
+        } else if (poll_fds[0].revents & std.posix.POLL.IN != 0) {
             conn.update(false) catch |err| {
                 if (err == error.WouldBlock) continue;
                 if (err == error.ConnectionLost) {
@@ -186,13 +161,13 @@ const std = @import("std");
 // Helpers
 
 fn helloReply(erased_conn: *anyopaque, msg: *types.DBusMessage) anyerror!void {
-    const conn = @as(*types.DBusConnection, @alignCast(@ptrCast(erased_conn)));
+    const conn = @as(*types.DBusConnection, @ptrCast(@alignCast(erased_conn)));
     const unique_name = try msg.read(types.DBusString, conn.allocator);
     conn.unique_name = unique_name.value;
 }
 
 fn helloError(erased_conn: *anyopaque, _: *types.DBusMessage) anyerror!void {
-    const conn = @as(*types.DBusConnection, @alignCast(@ptrCast(erased_conn)));
+    const conn = @as(*types.DBusConnection, @ptrCast(@alignCast(erased_conn)));
     conn.state = .Errored;
 }
 
@@ -208,7 +183,7 @@ pub inline fn isObjectPathValid(path: []const u8) bool {
         prev_is_slash = c == '/';
         switch (c) {
             'A'...'Z', 'a'...'z', '0'...'9', '/', '_' => {},
-            else => return false
+            else => return false,
         }
     }
 
@@ -230,7 +205,7 @@ pub inline fn isNameValid(name: []const u8) bool {
             '0'...'9' => {
                 if (start_of_section) return false;
             },
-            else => return false
+            else => return false,
         }
     }
 

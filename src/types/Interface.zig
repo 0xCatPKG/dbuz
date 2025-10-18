@@ -25,7 +25,8 @@ const ObjectPath = dbuz.types.DBusObjectPath;
 const Type = std.builtin.Type;
 
 pub const Error = error {
-    Unhandled
+    UnknownMethod,
+    UnknownInterface,
 } || DBusConnection.Error;
 
 ptr: *anyopaque, // Pointer to actual interface implementation
@@ -153,10 +154,23 @@ pub fn init(
                                         read_args_slice[i] = param.type.?;
                                     }
 
-                                    const args = .{&self.iface_impl} ++ (msg.read(std.meta.Tuple(&read_args_slice), allocator) catch {
-                                        const fmt = try std.fmt.allocPrint(allocator, "{s}.Error.ParsingError", .{self.interface});
-                                        try conn.replyError(msg, fmt, "Unable to parse", allocator);
-                                        return;
+                                    const args = .{&self.iface_impl} ++ (msg.read(std.meta.Tuple(&read_args_slice), allocator) catch |err| switch (err) {
+                                        DBusMessage.DeserializationError.SignatureMismatch, DBusMessage.DeserializationError.MessageTooShort => {
+                                            const description = try std.fmt.allocPrint(allocator, "Invalid signature for method call '{s}': expected '{s}' but found '{s}'",
+                                                .{msg.member.?, dbus_types.guessSignature(std.meta.Tuple(&read_args_slice)), msg.signature.items}
+                                            );
+                                            defer self.allocator.free(description);
+                                            return conn.replyError(msg, "org.freedesktop.DBus.Error.UnknownMethod", description, allocator);
+                                        },
+                                        DBusMessage.DeserializationError.VariantUnexpectedSignature => {
+                                            const description = try std.fmt.allocPrint(allocator, "Variants inside method call for method '{s}' contain unexpected signature.",
+                                                .{msg.member.?}
+                                            );
+                                            defer self.allocator.free(description);
+                                            return conn.replyError(msg, "org.freedesktop.DBus.Error.UnknownMethod", description, allocator);
+                                        },
+                                        DBusMessage.DeserializationError.DepthLimitReached => @panic("Deserialization depth limit reached! This is likely application's fault, please report to application developer."),
+                                        DBusMessage.DeserializationError.OutOfMemory => return Error.OutOfMemory,
                                     }) ++ (if (has_message_arg) .{msg} else .{});
 
                                     const ret = @call(.auto, decl, args);
@@ -164,7 +178,7 @@ pub fn init(
 
                                     if (isReturnTypeErrorUnion(func.return_type.?)) {
                                         const unwrapped = ret catch |err| {
-                                            const error_name = try std.fmt.allocPrint(allocator, "{s}.{s}", .{self.interface, @errorName(err)});
+                                            const error_name = try std.fmt.allocPrint(allocator, "{s}.Error.{s}", .{self.interface, @errorName(err)});
 
                                             const error_desc = if (std.meta.hasFn(InterfacePrototype, "errorDesc")) blk: {
                                                 const error_getter = @field(InterfacePrototype, "errorDesc");
@@ -181,6 +195,7 @@ pub fn init(
                     }
                 }
             }
+            return Error.UnknownMethod;
         }
 
         /// For DBusProperties. TODO: Adequate documentation

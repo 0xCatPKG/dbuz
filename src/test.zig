@@ -4,13 +4,11 @@ const builtin = @import("builtin");
 const dbuz = @import("dbuz.zig");
 
 fn waitOnFD(fd: std.posix.fd_t, timeout_ms: i32) !void {
-    var poll_fds = [_]std.posix.pollfd {
-        .{
-            .fd = fd,
-            .events = std.posix.POLL.IN | std.posix.POLL.HUP,
-            .revents = 0,
-        }
-    };
+    var poll_fds = [_]std.posix.pollfd{.{
+        .fd = fd,
+        .events = std.posix.POLL.IN | std.posix.POLL.HUP,
+        .revents = 0,
+    }};
     const evcnt = try std.posix.poll(&poll_fds, timeout_ms);
     if (evcnt == 0) return error.Timeout;
     if (poll_fds[0].revents & std.posix.POLL.HUP != 0) return error.Hangup;
@@ -19,11 +17,7 @@ fn waitOnFD(fd: std.posix.fd_t, timeout_ms: i32) !void {
 }
 
 test "dbuz_singlethreaded_session_connect" {
-    const conn = dbuz.connect(testing.allocator, .{
-        .bus = .Session,
-        .enable_introspection = false,
-        .config = .{}
-    }) catch |err| switch (err) {
+    const conn = dbuz.connect(testing.allocator, .{ .bus = .Session, .enable_introspection = false, .config = .{} }) catch |err| switch (err) {
         error.ConnectionLost => return err,
         else => return error.SkipZigTest,
     };
@@ -36,11 +30,7 @@ test "dbuz_singlethreaded_session_connect" {
 
 test "dbus_multithreaded_session_connect" {
     if (builtin.single_threaded) return error.SkipZigTest;
-    const conn = dbuz.connect(testing.allocator, .{
-        .bus = .Session,
-        .enable_introspection = false,
-        .config = .{}
-    }) catch |err| switch (err) {
+    const conn = dbuz.connect(testing.allocator, .{ .bus = .Session, .enable_introspection = false, .config = .{} }) catch |err| switch (err) {
         error.ConnectionLost => return err,
         else => return error.SkipZigTest,
     };
@@ -56,11 +46,7 @@ test "dbus_multithreaded_session_connect" {
 }
 
 test "dbuz_singlethreaded_system_connect" {
-    const conn = dbuz.connect(testing.allocator, .{
-        .bus = .System,
-        .enable_introspection = false,
-        .config = .{}
-    }) catch |err| switch (err) {
+    const conn = dbuz.connect(testing.allocator, .{ .bus = .System, .enable_introspection = false, .config = .{} }) catch |err| switch (err) {
         error.ConnectionLost => return err,
         else => return error.SkipZigTest,
     };
@@ -73,11 +59,7 @@ test "dbuz_singlethreaded_system_connect" {
 
 test "dbus_multithreaded_system_connect" {
     if (builtin.single_threaded) return error.SkipZigTest;
-    const conn = dbuz.connect(testing.allocator, .{
-        .bus = .System,
-        .enable_introspection = false,
-        .config = .{}
-    }) catch |err| switch (err) {
+    const conn = dbuz.connect(testing.allocator, .{ .bus = .System, .enable_introspection = false, .config = .{} }) catch |err| switch (err) {
         error.ConnectionLost => return err,
         else => return error.SkipZigTest,
     };
@@ -90,10 +72,21 @@ test "dbus_multithreaded_system_connect" {
 
     std.posix.nanosleep(0, std.time.ns_per_ms * 25);
     try testing.expect(conn.unique_name != null);
-
 }
 
 test "evaluate all" {
-    testing.refAllDeclsRecursive(dbuz);
-    return;
+    // testing.refAllDeclsRecursive(dbuz);
+
+    const conn = try dbuz.connect(testing.allocator, .{});
+    defer conn.deinit();
+
+    const run_cond, const thread = try dbuz.spawnPollingThread(conn, testing.allocator);
+    defer testing.allocator.destroy(run_cond);
+    defer thread.join();
+    defer run_cond.* = false;
+
+    const service = try conn.requestName("org.example.DBuz", .{});
+    defer service.release();
+
+    std.posix.nanosleep(15, 0);
 }

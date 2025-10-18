@@ -40,7 +40,7 @@ pub fn initStatic(comptime T: type) type {
 
 pub fn initRights(allocator: std.mem.Allocator, fds: []const i32) !*cmsghdr {
     const size = std.mem.alignForward(usize, @sizeOf(cmsghdr), @alignOf(usize)) + fds.len * @sizeOf(i32);
-    const buffer = (try allocator.alignedAlloc(u8, @alignOf(cmsghdr), size)).ptr;
+    const buffer = (try allocator.alignedAlloc(u8, std.mem.Alignment.fromByteUnits(@alignOf(cmsghdr)), size)).ptr;
     @memset(buffer[0..size], 0);
     const header: *cmsghdr = @ptrCast(buffer);
     const data_start = buffer + std.mem.alignForward(usize, @sizeOf(cmsghdr), @alignOf(usize));
@@ -101,7 +101,7 @@ pub fn deinit(allocator: std.mem.Allocator, header: *cmsghdr) void {
 }
 
 pub fn bufferAsCmsghdr(buffer: [*]u8) *cmsghdr {
-    const header: *cmsghdr = @alignCast(@ptrCast(buffer));
+    const header: *cmsghdr = @ptrCast(@alignCast(buffer));
     return header;
 }
 

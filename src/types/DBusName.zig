@@ -1,4 +1,3 @@
-
 const std = @import("std");
 const dbuz = @import("../dbuz.zig");
 
@@ -54,12 +53,7 @@ refcounter: std.atomic.Value(u32) = .init(0),
 /// When you are ready to request name, just call .request()
 pub fn init(conn: *DBusConnection, name: []const u8, allow_replacement: bool, allocator: std.mem.Allocator, callbacks: ?Callbacks) error{OutOfMemory}!*Self {
     const self = try allocator.create(Self);
-    self.* =.{.conn = conn, .name = name, .allow_replacement = allow_replacement, .allocator = allocator, .objects = .{
-        .map = .init(allocator),
-        .mutex = .init
-    },
-    .callbacks = callbacks
-    };
+    self.* = .{ .conn = conn, .name = name, .allow_replacement = allow_replacement, .allocator = allocator, .objects = .{ .map = .init(allocator), .mutex = .init }, .callbacks = callbacks };
     return self;
 }
 
@@ -118,7 +112,6 @@ pub fn registerInterface(self: *Self, comptime T: type, userdata: *anyopaque, pa
 /// Removes an interface from the name interfaces table.
 /// Note that this function does not frees the memory of the interface, but DBusInterface.destroy() calls that function implicitly.
 pub fn unregisterInterface(self: *Self, interface: Interface) void {
-
     self.objects.mutex.lock();
     defer self.objects.mutex.unlock();
 
@@ -147,7 +140,7 @@ pub fn routeMethodCall(self: *Self, msg: *DBusMessage) Interface.Error!void {
             }
         }
     }
-    return Interface.Error.Unhandled;
+    return Interface.Error.UnknownInterface;
 }
 
 /// Asks dbus to release the name, then unrefs the object.
@@ -166,7 +159,7 @@ pub fn deinit(self: *Self) void {
         for (entry.value_ptr.items) |iface| {
             iface.destroy();
         }
-        entry.value_ptr.deinit();
+        entry.value_ptr.deinit(self.allocator);
     }
     self.objects.map.deinit();
     self.allocator.destroy(self);
@@ -186,7 +179,7 @@ pub const RequestNameOptions = struct {
 };
 
 /// Synchronously requests the name from the bus and then returns result. That method should be never called from polling loop, as it waits until bus response.
-pub fn request(self: *Self, options: RequestNameOptions) (error{Timeout, ConnectionLost} || Error)!void {
+pub fn request(self: *Self, options: RequestNameOptions) (error{ Timeout, ConnectionLost } || Error)!void {
     if (options.callbacks) |cb| self.callbacks = cb;
 
     // TODO: Lower error set to be adequate here
@@ -197,6 +190,6 @@ pub fn request(self: *Self, options: RequestNameOptions) (error{Timeout, Connect
         Error.Queued => return Error.Queued,
         error.Timeout => return error.Timeout,
         error.ConnectionLost => return error.ConnectionLost,
-        else => @panic("Unexpected error in DBusName.request")
+        else => @panic("Unexpected error in DBusName.request"),
     };
 }

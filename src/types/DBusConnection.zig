@@ -51,7 +51,7 @@ pub const DBusConnection = @This();
 // Unhandled messages collection strategy
 const FallbackMessageHandling = union(enum) {
     ignore: void, // Frees message automatically
-    fallback_handler: *fn (*DBusConnection, *DBusMessage, ?*anyopaque) anyerror!void
+    fallback_handler: *fn (*DBusConnection, *DBusMessage, ?*anyopaque) anyerror!void,
 };
 
 /// Options for creating a DBusConnection
@@ -65,10 +65,11 @@ pub const Options = struct {
     enable_unix_fds: bool = true,
 };
 
+// ObjectPath -> List of interfaces
 const InterfaceMap = std.StringHashMap(std.ArrayList(Interface));
 
 allocator: std.mem.Allocator,
-transport_layer: ?Transport, // If null dbus is not connected
+transport_layer: Transport, // If null dbus is not connected
 unique_name: ?[]const u8, // Name not known before connection is established
 unix_fds_enabled: bool = false,
 
@@ -83,20 +84,14 @@ fallback_userdata: ?*anyopaque,
 
 update_thread_id: ?std.Thread.Id = null,
 
-global_objects: struct {
-    map: InterfaceMap,
-    mutex: Mutex
-},
+global_objects: struct { map: InterfaceMap, mutex: Mutex },
 
 match_rules: struct {
     list: std.ArrayList(MatchGroup),
     mutex: Mutex,
 },
 
-names: struct {
-    map: std.StringHashMap(*DBusName),
-    mutex: Mutex
-},
+names: struct { map: std.StringHashMap(*DBusName), mutex: Mutex },
 
 default_call_timeout: u64 = std.time.ns_per_s * 120,
 
@@ -118,7 +113,7 @@ pub fn init(allocator: std.mem.Allocator, socket: std.posix.socket_t, options: O
         .fallback_userdata = options.fallback_userdata,
         .unix_fds_enabled = options.enable_unix_fds,
         .match_rules = .{
-            .list = .init(allocator),
+            .list = .{},
             .mutex = Mutex.init,
         },
         .names = .{
@@ -130,7 +125,7 @@ pub fn init(allocator: std.mem.Allocator, socket: std.posix.socket_t, options: O
             .mutex = Mutex.init,
         },
         .buffer = try .initCapacity(allocator, std.heap.pageSize()),
-        .fd_list = .init(allocator),
+        .fd_list = .{},
     };
     return self;
 }
@@ -141,52 +136,51 @@ pub fn connect(self: *DBusConnection) !void {
 }
 
 pub fn addMatchGroup(self: *DBusConnection, comptime MatchHandler: type, rule: MatchGroup.Rule, userdata: *anyopaque) !?MatchGroup {
-
     var mgroup: ?MatchGroup = null;
     if (MatchHandler != void) {
         self.match_rules.mutex.lock();
         defer self.match_rules.mutex.unlock();
 
         mgroup = try MatchGroup.init(MatchHandler, userdata, self.allocator, rule);
-        try self.match_rules.list.append(mgroup.?);
+        try self.match_rules.list.append(self.allocator, mgroup.?);
     }
     if (self.state != .Connected) return null;
 
-    var rulestr = std.ArrayList(u8).init(self.allocator);
-    defer rulestr.deinit();
-    try rulestr.appendSlice("type='signal'");
+    var rulestr = try std.ArrayList(u8).initCapacity(self.allocator, 1024);
+    defer rulestr.deinit(self.allocator);
+    try rulestr.appendSlice(self.allocator, "type='signal'");
     if (rule.destination) |dest| {
         const part = try std.fmt.allocPrint(self.allocator, ",destination={s}", .{dest});
         defer self.allocator.free(part);
-        try rulestr.appendSlice(part);
+        try rulestr.appendSlice(self.allocator, part);
     }
     if (rule.interface) |iface| {
         const part = try std.fmt.allocPrint(self.allocator, ",interface={s}", .{iface});
         defer self.allocator.free(part);
-        try rulestr.appendSlice(part);
+        try rulestr.appendSlice(self.allocator, part);
     }
     if (rule.sender) |sender| {
         const part = try std.fmt.allocPrint(self.allocator, ",sender={s}", .{sender});
         defer self.allocator.free(part);
-        try rulestr.appendSlice(part);
+        try rulestr.appendSlice(self.allocator, part);
     }
     if (rule.path) |path| {
         const part = try std.fmt.allocPrint(self.allocator, ",path={s}", .{path});
         defer self.allocator.free(part);
-        try rulestr.appendSlice(part);
+        try rulestr.appendSlice(self.allocator, part);
     }
     if (rule.path_namespace) |path_namespace| {
         const part = try std.fmt.allocPrint(self.allocator, ",path_namespace={s}", .{path_namespace});
         defer self.allocator.free(part);
-        try rulestr.appendSlice(part);
+        try rulestr.appendSlice(self.allocator, part);
     }
     if (rule.member) |member| {
         const part = try std.fmt.allocPrint(self.allocator, ",member={s}", .{member});
         defer self.allocator.free(part);
-        try rulestr.appendSlice(part);
+        try rulestr.appendSlice(self.allocator, part);
     }
 
-    const rule_string = String{.value = try rulestr.toOwnedSlice(), .ownership = true};
+    const rule_string = String{ .value = try rulestr.toOwnedSlice(self.allocator), .ownership = true };
     defer rule_string.deinit(self.allocator);
 
     if (!rule.silent) try self.dbus().AddMatch(rule_string.value);
@@ -195,7 +189,6 @@ pub fn addMatchGroup(self: *DBusConnection, comptime MatchHandler: type, rule: M
 }
 
 pub fn publishDefaultInterface(self: *DBusConnection, comptime T: type, name: []const u8, path: []const u8, userdata: *anyopaque) !Interface {
-
     if (!isObjectPathValid(path)) return Error.InvalidObjectPath;
     if (!isNameValid(name)) return Error.InvalidInterfaceName;
 
@@ -226,7 +219,7 @@ pub fn registerInterface(self: *DBusConnection, comptime T: type, name: []const 
     defer self.global_objects.mutex.unlock();
 
     const interface_list: *std.ArrayList(Interface) = self.global_objects.map.getPtr(path) orelse blk: {
-        const list = std.ArrayList(Interface).init(self.allocator);
+        const list = std.ArrayList(Interface){};
         try self.global_objects.map.put(path, list);
         break :blk self.global_objects.map.getPtr(path) orelse unreachable;
     };
@@ -235,7 +228,7 @@ pub fn registerInterface(self: *DBusConnection, comptime T: type, name: []const 
         if (std.mem.eql(u8, iface.interface, name)) return error.InterfaceNameAlreadyRegistered;
     }
 
-    try interface_list.append(interface);
+    try interface_list.append(self.allocator, interface);
 
     return interface;
 }
@@ -257,20 +250,17 @@ pub fn unregisterInterface(self: *DBusConnection, interface: Interface) void {
 }
 
 pub fn deinit(self: *DBusConnection) void {
-
-    if (self.transport_layer) |ts| {
-        std.posix.shutdown(ts.fd, .both) catch {};
-    }
+    std.posix.shutdown(self.transport_layer.fd, .both) catch {};
 
     var objects_it = self.global_objects.map.iterator();
     while (objects_it.next()) |entry| {
         for (entry.value_ptr.items) |iface| {
             iface.destroy();
         }
-        entry.value_ptr.deinit();
+        entry.value_ptr.deinit(self.allocator);
     }
 
-    self.buffer.deinit();
+    self.buffer.deinit(self.allocator);
     self.response_futures.deinit();
     self.global_objects.map.deinit();
     self.names.map.deinit();
@@ -278,52 +268,60 @@ pub fn deinit(self: *DBusConnection) void {
     for (self.match_rules.list.items) |rule| {
         rule.deinit();
     }
-    self.match_rules.list.deinit();
+    self.match_rules.list.deinit(self.allocator);
 
     if (self.introspectable_ctx) |*introspectable| introspectable.reset();
 
     if (self.unique_name) |name| self.allocator.free(name);
 
     self.allocator.destroy(self);
-
 }
 
 pub fn getFd(self: *DBusConnection) i32 {
-    return self.transport_layer.?.fd;
+    return self.transport_layer.fd;
 }
 
 /// Writes the authentication sequence to the transport layer.
 pub fn auth(self: *DBusConnection, unix_fds: bool) Transport.Error!void {
     self.state = .Auth;
 
-    try self.transport_layer.?.write("\x00AUTH EXTERNAL\r\nDATA\r\n", .none, true);
+    try self.transport_layer.write("\x00AUTH EXTERNAL\r\nDATA\r\n", .none, true);
     if (unix_fds) {
         self.unix_fds_enabled = true;
-        try self.transport_layer.?.write("NEGOTIATE_UNIX_FD\r\n", .none, true);
+        try self.transport_layer.write("NEGOTIATE_UNIX_FD\r\n", .none, true);
         logger.debug("Asking bus for unix fd support", .{});
     }
-    try self.transport_layer.?.write("BEGIN\r\n", .none, true);
+    try self.transport_layer.write("BEGIN\r\n", .none, true);
+}
+
+fn createRoutingError(self: *DBusConnection, message: *DBusMessage, error_type: Interface.Error, interface: []const u8, path: []const u8, member: []const u8) !void {
+    const name, const description = switch (error_type) {
+        Interface.Error.UnknownInterface => .{ "org.freedesktop.DBus.Error.UnknownInterface", try std.fmt.allocPrint(self.allocator, "No such interface '{s}' at object path '{s}'", .{ interface, path }) },
+        Interface.Error.UnknownMethod => .{ "org.freedesktop.DBus.Error.UnknownMethod", try std.fmt.allocPrint(self.allocator, "No such method '{s}' in interface '{s}' at object path '{s}'", .{ member, interface, path }) },
+        else => .{ "org.freedesktop.DBus.Error.Failed", try std.fmt.allocPrint(self.allocator, "", .{}) },
+    };
+    defer self.allocator.free(description);
+    try self.replyError(message, name, description, self.allocator);
 }
 
 pub fn update(self: *DBusConnection, blocking: bool) Error!void {
-    std.debug.assert(self.transport_layer != null);
     if (self.state == .Unconnected) return Error.ConnectionLost;
 
     self.update_thread_id = std.Thread.getCurrentId();
     defer self.update_thread_id = null;
 
     while (true) {
-        const datamsg = self.transport_layer.?.read(blocking) catch |err| {
+        const datamsg = self.transport_layer.read(blocking) catch |err| {
             switch (err) {
                 Transport.Error.WouldBlock => break,
                 else => return err,
             }
         };
         defer datamsg.deinit();
-        try self.buffer.appendSlice(datamsg.data);
+        try self.buffer.appendSlice(self.allocator, datamsg.data);
         if (datamsg.fds) |fds| {
             for (fds) |fd| {
-                try self.fd_list.append(fd);
+                try self.fd_list.append(self.allocator, fd);
             }
         }
     }
@@ -342,8 +340,7 @@ pub fn update(self: *DBusConnection, blocking: bool) Error!void {
 
         message.* = DBusMessage.parseFromReader(self.allocator, bytes_reader, &self.fd_list) catch |err| {
             if (err != DBusMessage.DeserializationError.MessageTooShort) return err;
-            if (self.buffer.items.len - fixed_bytes_stream.pos > 0) try self.buffer.replaceRange(0, self.buffer.items.len - fixed_bytes_stream.pos, self.buffer.items[fixed_bytes_stream.pos..])
-            else self.buffer.clearRetainingCapacity();
+            if (self.buffer.items.len - fixed_bytes_stream.pos > 0) try self.buffer.replaceRange(self.allocator, 0, self.buffer.items.len - fixed_bytes_stream.pos, self.buffer.items[fixed_bytes_stream.pos..]) else self.buffer.clearRetainingCapacity();
             self.allocator.destroy(message);
             break;
         };
@@ -351,13 +348,13 @@ pub fn update(self: *DBusConnection, blocking: bool) Error!void {
 
         switch (message.message_type) {
             .INVALID => {
-                logger.warn("[{?s}->{?s}] INVALID_MESSAGE@{d}", .{message.sender, message.destination, message.serial});
+                logger.warn("[{?s}->{?s}] INVALID_MESSAGE@{d}", .{ message.sender, message.destination, message.serial });
                 message.deinit();
                 self.allocator.destroy(message);
             },
             .METHOD_RETURN, .ERROR => {
                 if (message.reply_serial) |serial| {
-                    logger.debug("[{?s}->{?s}] {s}@{d}(@{d}): ({s})", .{message.sender, message.destination, @tagName(message.message_type), message.serial, serial, if (message.signature.items.len > 0) message.signature.items else ""});
+                    logger.debug("[{?s}->{?s}] {s}@{d}(@{d}): ({s})", .{ message.sender, message.destination, @tagName(message.message_type), message.serial, serial, if (message.signature.items.len > 0) message.signature.items else "" });
                     self.response_futures_lock.lock();
                     defer self.response_futures_lock.unlock();
 
@@ -381,25 +378,27 @@ pub fn update(self: *DBusConnection, blocking: bool) Error!void {
                     self.allocator.destroy(message);
                 }
 
-                logger.debug("[{?s}->{?s}] METHOD_CALL@{d} {?s}@{?s}.{?s}({s})", .{message.sender, message.destination, message.serial, message.path, message.interface, message.member, if (message.signature.items.len > 0) message.signature.items else ""});
+                logger.debug("[{?s}->{?s}] METHOD_CALL@{d} {?s}@{?s}.{?s}({s})", .{ message.sender, message.destination, message.serial, message.path, message.interface, message.member, if (message.signature.items.len > 0) message.signature.items else "" });
 
                 if (message.sender == null or message.destination == null or message.path == null or message.member == null) {
                     logger.warn("Invalid sender, destination, path, member for method call", .{});
-                    message.deinit();
-                    self.allocator.destroy(message);
+                    self.replyError(message, "org.freedesktop.DBus.Error.Failed", "Malformed method call", self.allocator) catch {};
                     continue;
                 }
                 names_scope: {
                     self.names.mutex.lock();
                     defer self.names.mutex.unlock();
 
-
                     var it = self.names.map.iterator();
                     while (it.next()) |entry| {
                         if (std.mem.eql(u8, entry.key_ptr.*, message.destination.?)) {
-                            entry.value_ptr.*.routeMethodCall(message) catch |err| {
-                                if (err == error.Unhandled) break :names_scope;
-                                logger.err("Error routing call: {s}", .{@errorName(err)});
+                            entry.value_ptr.*.routeMethodCall(message) catch |err| switch (err) {
+                                Interface.Error.UnknownInterface => break :names_scope,
+                                Interface.Error.UnknownMethod => {
+                                    self.createRoutingError(message, Interface.Error.UnknownMethod, message.interface.?, message.path.?, message.member.?) catch {};
+                                    continue :next;
+                                },
+                                else => logger.err("Error routing call: {s}", .{@errorName(err)}),
                             };
                             continue :next;
                         }
@@ -412,9 +411,13 @@ pub fn update(self: *DBusConnection, blocking: bool) Error!void {
                     if (self.global_objects.map.get(message.path.?)) |list| global_scope: {
                         for (list.items) |interface| {
                             if (std.mem.eql(u8, interface.interface, message.interface.?)) {
-                                interface.vtable.route_call(interface.ptr, self, message) catch |err| {
-                                    if (err == error.Unhandled) break :global_scope;
-                                    logger.err("Error routing call: {s}", .{@errorName(err)});
+                                interface.vtable.route_call(interface.ptr, self, message) catch |err| switch (err) {
+                                    Interface.Error.UnknownInterface => break :global_scope,
+                                    Interface.Error.UnknownMethod => {
+                                        self.createRoutingError(message, Interface.Error.UnknownMethod, message.interface.?, message.path.?, message.member.?) catch {};
+                                        continue :next;
+                                    },
+                                    else => logger.err("Error routing call: {s}", .{@errorName(err)}),
                                 };
                                 continue :next;
                             }
@@ -424,9 +427,13 @@ pub fn update(self: *DBusConnection, blocking: bool) Error!void {
                     if (self.global_objects.map.get("*")) |list| wildcard_scope: {
                         for (list.items) |interface| {
                             if (std.mem.eql(u8, interface.interface, message.interface.?)) {
-                                interface.vtable.route_call(interface.ptr, self, message) catch |err| {
-                                    if (err == error.Unhandled) break :wildcard_scope;
-                                    logger.err("Error routing call: {s}", .{@errorName(err)});
+                                interface.vtable.route_call(interface.ptr, self, message) catch |err| switch (err) {
+                                    Interface.Error.UnknownInterface => break :wildcard_scope,
+                                    Interface.Error.UnknownMethod => {
+                                        self.createRoutingError(message, Interface.Error.UnknownMethod, message.interface.?, message.path.?, message.member.?) catch {};
+                                        continue :next;
+                                    },
+                                    else => logger.err("Error routing call: {s}", .{@errorName(err)}),
                                 };
                                 continue :next;
                             }
@@ -434,10 +441,12 @@ pub fn update(self: *DBusConnection, blocking: bool) Error!void {
                     }
                 }
                 switch (self.fallback_msgs_strategy) {
-                    .ignore => {},
+                    .ignore => {
+                        self.createRoutingError(message, Interface.Error.UnknownInterface, message.interface.?, message.path.?, message.member.?) catch {};
+                    },
                     .fallback_handler => |cb| {
                         cb(self, message, self.fallback_userdata) catch {};
-                    }
+                    },
                 }
             },
             .SIGNAL => {
@@ -446,7 +455,7 @@ pub fn update(self: *DBusConnection, blocking: bool) Error!void {
                     self.allocator.destroy(message);
                 }
 
-                logger.debug("[{?s}->{?s}] SIGNAL@{d} {?s}.{?s}({s})", .{message.sender, message.destination, message.serial, message.interface, message.member, if (message.signature.items.len > 0) message.signature.items else ""});
+                logger.debug("[{?s}->{?s}] SIGNAL@{d} {?s}.{?s}({s})", .{ message.sender, message.destination, message.serial, message.interface, message.member, if (message.signature.items.len > 0) message.signature.items else "" });
                 if (self.match_rules.list.items.len > 0) {
                     self.match_rules.mutex.lock();
                     defer self.match_rules.mutex.unlock();
@@ -472,8 +481,9 @@ pub fn update(self: *DBusConnection, blocking: bool) Error!void {
                         group.vtable.signal(group.ptr, message) catch |err| {
                             if (err == error.NotHandled) {
                                 switch (self.fallback_msgs_strategy) {
-                                    .ignore, => {},
-                                    .fallback_handler  => |cb| {
+                                    .ignore,
+                                    => {},
+                                    .fallback_handler => |cb| {
                                         cb(self, message, self.fallback_userdata) catch {};
                                     },
                                 }
@@ -481,7 +491,7 @@ pub fn update(self: *DBusConnection, blocking: bool) Error!void {
                         };
                     }
                 }
-            }
+            },
         }
     }
 }
@@ -512,8 +522,7 @@ fn processAuth(self: *DBusConnection, reader: anytype) !void {
                     logger.debug("Bus authentication rejected", .{});
                     self.state = .Rejected;
                     return Error.ConnectionLost;
-                } else if (std.mem.startsWith(u8, line, "DATA")) {
-                } else {
+                } else if (std.mem.startsWith(u8, line, "DATA")) {} else {
                     return Error.ConnectionLost;
                 }
             }
@@ -535,7 +544,7 @@ fn processAuth(self: *DBusConnection, reader: anytype) !void {
                     return;
                 } else return Error.ConnectionLost;
             }
-        }
+        },
     }
 }
 
@@ -562,7 +571,6 @@ pub const MethodCallParams = struct {
         no_auto_start: bool = false,
         allow_interactive_auth: bool = false,
     };
-
 };
 
 /// Finalizes message and sends to bus
@@ -573,22 +581,22 @@ pub fn send(self: *DBusConnection, msg: *DBusMessage) Error!void {
     defer msg.allocator.free(buffer);
     var oobd: OutOfBandData = .none;
     if (msg.unix_fds.items.len > 0) {
-        oobd = .{ .rights = try msg.unix_fds.toOwnedSliceSentinel(-1) };
+        oobd = .{ .rights = try msg.unix_fds.toOwnedSliceSentinel(self.allocator, -1) };
         defer msg.allocator.free(oobd.rights);
     }
 
-    try self.transport_layer.?.write(buffer, oobd, true);
-    logger.debug("[{?s}->{?s}] {s}@{d}(@{?d}) {?s}@{?s}.{?s}({?s})", .{
-        msg.sender,
-        msg.destination,
-        @tagName(msg.message_type),
-        msg.serial,
-        msg.reply_serial,
-        msg.path,
-        msg.interface,
-        msg.member,
-        if (msg.signature.items.len > 0) msg.signature.items else "",
-    });
+    try self.transport_layer.write(buffer, oobd, true);
+    // logger.debug("[{?any}->{?any}] {any}@{d}(@{?d}) {?any}@{?any}.{?any}({?any})", .{
+    //     msg.sender,
+    //     msg.destination,
+    //     @tagName(msg.message_type),
+    //     msg.serial,
+    //     msg.reply_serial,
+    //     msg.path,
+    //     msg.interface,
+    //     msg.member,
+    //     if (msg.signature.items.len > 0) msg.signature.items else "",
+    // });
 }
 
 /// Call method on the bus and possibly return a DBusPendingResponse pointer
@@ -683,12 +691,7 @@ pub inline fn newMethodReturn(self: *DBusConnection, reply_to: *DBusMessage, all
     return msg;
 }
 
-const SignalCreationParams = struct {
-    path: []const u8,
-    interface: []const u8,
-    member: []const u8,
-    sender: ?[]const u8 = null
-};
+const SignalCreationParams = struct { path: []const u8, interface: []const u8, member: []const u8, sender: ?[]const u8 = null };
 
 pub inline fn newSignal(self: *DBusConnection, params: SignalCreationParams, allocator: std.mem.Allocator) AllocatorError!DBusMessage {
     var msg = try DBusMessage.init(
@@ -707,7 +710,7 @@ pub inline fn newSignal(self: *DBusConnection, params: SignalCreationParams, all
 pub inline fn replyError(self: *DBusConnection, in_reply_to: *DBusMessage, error_name: []const u8, description: []const u8, allocator: std.mem.Allocator) Error!void {
     var err = try self.newError(in_reply_to, error_name, allocator);
     defer err.deinit();
-    try err.write(String{.value = description});
+    try err.write(String{ .value = description });
     return self.send(&err);
 }
 
@@ -734,7 +737,7 @@ fn readerGetPos(reader: anytype) usize {
         *std.ArrayList(u8) => reader.context.items.len,
         *std.io.FixedBufferStream([]u8) => reader.context.pos,
         *const anyopaque => blk: {
-            const ctx: *const *std.io.FixedBufferStream([:0]u8) = @alignCast(@ptrCast(reader.context));
+            const ctx: *const *std.io.FixedBufferStream([:0]u8) = @ptrCast(@alignCast(reader.context));
             break :blk ctx.*.pos;
         },
         else => @compileError("Unsupported type " ++ @typeName(@TypeOf(reader.context)) ++ " in alignRead"),
@@ -745,7 +748,7 @@ fn readerSetPos(reader: anytype, pos: usize) void {
     return switch (@TypeOf(reader.context)) {
         *std.io.FixedBufferStream([]u8) => reader.context.pos = pos,
         *const anyopaque => {
-            const ctx: *const *std.io.FixedBufferStream([:0]u8) = @alignCast(@ptrCast(reader.context));
+            const ctx: *const *std.io.FixedBufferStream([:0]u8) = @ptrCast(@alignCast(reader.context));
             ctx.*.pos = pos;
         },
         else => @compileError("Unsupported type " ++ @typeName(@TypeOf(reader.context)) ++ " in alignRead"),
@@ -757,7 +760,7 @@ fn readerGetMax(reader: anytype) usize {
         *std.ArrayList(u8) => reader.context.items.len,
         *std.io.FixedBufferStream([]u8) => reader.context.buffer.len,
         *const anyopaque => blk: {
-            const ctx: *const *std.io.FixedBufferStream([:0]u8) = @alignCast(@ptrCast(reader.context));
+            const ctx: *const *std.io.FixedBufferStream([:0]u8) = @ptrCast(@alignCast(reader.context));
             break :blk ctx.*.buffer.len;
         },
         else => @compileError("Unsupported type " ++ @typeName(@TypeOf(reader.context)) ++ " in alignRead"),
@@ -830,7 +833,7 @@ pub fn requestName(self: *DBusConnection, name: []const u8, options: DBusName.Re
     self.dbus().RequestName(name, options.flags) catch |err| switch (err) {
         else => @panic("Unhandled error type!"),
         DBusName.Error.AlreadyExists => return DBusName.Error.AlreadyExists,
-        DBusName.Error.AlreadyOwned =>  return DBusName.Error.AlreadyExists,
+        DBusName.Error.AlreadyOwned => return DBusName.Error.AlreadyExists,
         DBusName.Error.Queued => {},
         AllocatorError.OutOfMemory => return AllocatorError.OutOfMemory,
         error.Timeout => return error.Timeout,
@@ -841,13 +844,7 @@ pub fn requestName(self: *DBusConnection, name: []const u8, options: DBusName.Re
 
 /// Releases the name from the bus, and don't waits for reply.
 pub fn releaseName(self: *DBusConnection, name: *DBusName) void {
-    _ = self.call(.{
-        .destination = "org.freedesktop.DBus",
-        .path = "/org/freedesktop/DBus",
-        .interface = "org.freedesktop.DBus",
-        .member = "ReleaseName",
-        .flags = .{ .no_reply = true }
-    }, .{String{.value = name.name}}, self.allocator) catch {};
+    _ = self.call(.{ .destination = "org.freedesktop.DBus", .path = "/org/freedesktop/DBus", .interface = "org.freedesktop.DBus", .member = "ReleaseName", .flags = .{ .no_reply = true } }, .{String{ .value = name.name }}, self.allocator) catch {};
 
     self.removeName(name) catch {};
 }
