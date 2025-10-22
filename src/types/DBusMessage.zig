@@ -141,11 +141,7 @@ pub fn parseFromReader(allocator: std.mem.Allocator, bytes_reader: anytype, unix
     }
 
     var headers_list = try std.ArrayList(Header).initCapacity(allocator, 4);
-    var signature_buf = try ArrayListBuffer.initCapacity(allocator, 255);
-    errdefer {
-        headers_list.deinit(allocator);
-        signature_buf.deinit(allocator);
-    }
+    errdefer headers_list.deinit(allocator);
 
     var self: Self = .{ .allocator = allocator, .headers = headers_list };
 
