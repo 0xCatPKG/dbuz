@@ -40,7 +40,7 @@ const dbuz = @import("dbuz");
 pub fn main() !void {
     const allocator = std.heap.page_allocator;
 
-    /// Create connection to D-Bus session bus
+    // Create connection to D-Bus session bus
     const connection = try dbuz.connect(allocator, .{});
     defer connection.deinit();
 
