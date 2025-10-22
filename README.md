@@ -53,7 +53,7 @@ pub fn main() !void {
 
     std.posix.nanosleep(0, std.time.ns_per_ms * 25); // Sleep for some time to avoid busy loop
 
-    std.debug.print('My unique name is: {?s}\n', .{connection.unique_name});
+    std.debug.print("My unique name is: {?s}\n", .{connection.unique_name});
 }
 ```
 
