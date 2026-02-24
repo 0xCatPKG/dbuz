@@ -1,4 +1,7 @@
 
+/// Represents an active DBus connection.
+const Connection = @This();
+
 const std = @import("std");
 const mem = std.mem;
 const net = std.net;
@@ -11,7 +14,6 @@ const dbuz = @import("../dbuz.zig");
 const transport = dbuz.transport;
 const trie = @import("../tree.zig");
 
-const Connection = @This();
 const Message = dbuz.types.Message;
 const Promise = dbuz.types.Promise;
 const PromiseOpaque = dbuz.types.PromiseOpaque;
@@ -33,15 +35,20 @@ const ListenerManaged = struct {
     c: *Connection,
 };
 
+/// Default allocator to be used if another not passed to function.
 default_allocator: mem.Allocator,
 
 handle: posix.fd_t,
+
+/// Transport reader created from .handle.
 reader: transport.Reader,
 
+/// Queue of special entities received from control message passed with actual message.
 fd_queue: std.ArrayList(i32) = .{},
 ucreds_queue: std.ArrayList(@import("../cmsg.zig").ucred) = .{},
 pidfd_queue: std.ArrayList(i32) = .{},
 
+/// Should unix fd passing be enabled?
 enable_fds: bool = true,
 
 next_serial: atomic.Value(u32) = .init(1),
@@ -49,6 +56,7 @@ next_serial: atomic.Value(u32) = .init(1),
 pending_message: ?Message = null,
 pending_arena: ?*std.heap.ArenaAllocator = null,
 
+/// MethodCall response tracker.
 tracker: std.AutoArrayHashMapUnmanaged(u32, *PromiseOpaque) = .{},
 tracker_lock: Thread.Mutex = .{},
 
@@ -62,14 +70,20 @@ listeners: struct {
     list: std.ArrayList(ListenerManaged),
 },
 
+/// org.freedesktop.DBus proxy bound to current connection.
 dbus: dbuz.proxies.DBus,
+
+/// DBus unique name. null before call to hello(Async);
 unique_name: ?[]const u8 = null,
 
+/// Create new instance of connection, allocating new Connection on heap using passed allocator.
+/// Takes ownership of passed handle. If function returns an error, handle is guaranteed to be valid.
 pub fn init(allocator: mem.Allocator, handle: posix.fd_t) !*Connection {
     var reader = try transport.Reader.init(allocator, handle, default_buffer_size);
     errdefer reader.deinit();
     
     const c = try allocator.create(Connection);
+    errdefer allocator.destroy(c);
 
     c.* = .{
         .default_allocator = allocator,
@@ -90,10 +104,14 @@ pub fn init(allocator: mem.Allocator, handle: posix.fd_t) !*Connection {
     return c;
 }
 
+/// Exports handle used for sending and receiving data. Exists for cases, where owner of *Connection does not opened socket by themself.
 pub fn exportFileDescriptor(self: *const Connection) i32 {
     return self.handle;
 }
 
+/// Advances current connection internal state. Returns null if message is still in reading phase, returns tuple of Message, *ArenaAllocator when message is ready.
+/// ArenaAllocator is initialized by passed allocator (or default one if null is passed). All Message's internal allocations are made using returned ArenaAllocator.
+/// Caller owns returned memory. Caller MUST call Message.deinit() when all operations on message is ended, as ArenaAllocator.deinit() not closes associated file descriptors.
 pub fn advance(self: *Connection, allocator: ?mem.Allocator) !?struct {Message, *std.heap.ArenaAllocator} {
     const r = &self.reader.interface;
 
@@ -149,18 +167,10 @@ pub fn advance(self: *Connection, allocator: ?mem.Allocator) !?struct {Message, 
     return null;
 }
 
-pub fn readingLoop(self: *Connection, allocator: mem.Allocator) !void {
-    while (true) {
-        const result = try self.advance(allocator);
-        if (result) |res| {
-            try self.handleMessage(res);
-        }
-    }
-}
-
-pub fn startMessage(self: *Connection) !Message {
+/// Initializes Message struct in writing mode. Called owns returned memory and must call Message.deinit() to release the resources.
+pub fn startMessage(self: *Connection, gpa: ?std.mem.Allocator) !Message {
     const serial = self.next_serial.fetchAdd(1, .seq_cst);
-    var message = try Message.initWriting(self.default_allocator, .little, self.enable_fds);
+    var message = try Message.initWriting(gpa orelse self.default_allocator, .little, self.enable_fds);
     message.serial = serial;
     return message;
 }
@@ -176,6 +186,11 @@ fn helloReplied(_: *Promise(dbuz.types.String), name: dbuz.types.String, _: *std
 
 fn helloFailed(_: *Promise(dbuz.types.String), _: PromiseError, _: ?*anyopaque) void { }
 
+/// Sends org.freedesktop.DBus.Hello on message bus in asyncronous manner.
+/// Must be first sent message after bus authentication.
+/// (Internally, just a wrapper above Connection.dbus.Hello proxy call, that setups some callbacks, you can do it your way if you want to)
+///
+/// Returns promise to a DBus String, that is connection's unique name.
 pub fn helloAsync(c: *Connection) !*Promise(dbuz.types.String) {
     const promise = try c.dbus.Hello();
     promise.setupCallbacks(.{
@@ -187,6 +202,9 @@ pub fn helloAsync(c: *Connection) !*Promise(dbuz.types.String) {
     return promise;
 }
 
+/// Sends org.freedesktop.DBus.Hello and blocks until bus replies. See helloAsync for more information.
+///
+/// Calling that method in single threaded environment is an **unchecked illegal behavior** and will result in possible deadlock.
 pub fn hello(c: *Connection) !void {
     const promise = try c.helloAsync();
     defer if (promise.release() == 1) promise.destroy();
@@ -198,6 +216,9 @@ pub fn hello(c: *Connection) !void {
     _ = arena;
 }
 
+/// Create a *Promise of type T from a message. Bus will update promise if message will get response, error or will timeout (only if you provided implementation for it)
+/// 
+/// Callers owns reference to a Promise. As release order is unclear, caller, when releasing reference must check if it was last reference and destroy promise if so.
 pub fn trackResponse(c: *Connection, message: Message, comptime T: type) !*Promise(T) {
     const promise = try Promise(T).create(c.default_allocator);
     errdefer promise.destroy();
@@ -212,13 +233,12 @@ pub fn trackResponse(c: *Connection, message: Message, comptime T: type) !*Promi
     return promise.reference();
 }
 
-pub fn promiseDeadlineReached(c: *Connection, serial: u32, timerfd: i32) !void {
-
+/// Should be called from external mechanism to inform connection that response timeout for Promise with serial `serial` is reached.
+pub fn promiseDeadlineReached(c: *Connection, serial: u32) void {
     c.tracker_lock.lock();
     defer c.tracker_lock.unlock();
 
     const entry = c.tracker.fetchSwapRemove(serial);
-    defer posix.close(timerfd);
 
     if (!entry) {
         return;
@@ -305,6 +325,9 @@ fn handleIntrospection(c: *Connection, m: *Message, arena: mem.Allocator) !void 
     }
 }
 
+/// Handle tuple of Message, *ArenaAllocator received from Connection.advance.
+/// Takes ownership of Message and *ArenaAllocator, automatically runs callbacks from published interfaces, registered listeners
+/// and updates promises
 pub fn handleMessage(c: *Connection, m_a: struct {Message, *std.heap.ArenaAllocator}) !void {
     var message, const arena = m_a;
     var handled: bool = false;
@@ -382,19 +405,25 @@ pub fn handleMessage(c: *Connection, m_a: struct {Message, *std.heap.ArenaAlloca
     }
 }
 
-pub fn registerInterface(c: *Connection, impl: anytype, comptime path: []const u8, allocator: mem.Allocator) !void {
+/// Registers interface at specified path. 
+///
+/// impl is an container, that contains field "interface" of type dbuz.types.Interface. Passed interface
+/// must implement method_call and property_op vtable methods. gpa is an allocator used for impl's allocation.
+/// registerInterface takes reference to impl.interface and will use provided gpa when releases last reference to interface.
+pub fn registerInterface(c: *Connection, impl: anytype, comptime path: []const u8, gpa: mem.Allocator) !void {
     _ = impl.interface.reference();
-    errdefer if (impl.interface.release() == 1) impl.interface.deinit(allocator);
+    errdefer if (impl.interface.release() == 1) impl.interface.deinit(gpa);
     if (impl.interface.vtable.method_call == null or impl.interface.vtable.property_op == null) return error.InvalidVTable;
 
     c.object_tree.mutex.lock();
     defer c.object_tree.mutex.unlock();
 
     const key = trie.comptimePathWithLastComponent(path, @TypeOf(impl.*).interface_name);
-    try c.object_tree.tree.insert(key, .{ .interface = &impl.interface, .allocator = allocator });
+    try c.object_tree.tree.insert(key, .{ .interface = &impl.interface, .allocator = gpa });
     impl.interface.bind(c, path);
 }
 
+/// Unregisters interface at specified path.
 pub fn unregisterInterface(c: *Connection, impl: anytype, comptime path: []const u8) bool {
     const key = trie.comptimePathWithLastComponent(path, @TypeOf(impl.*).interface_name);
     
@@ -427,6 +456,8 @@ fn listenerAddError(_: *Promise(void), _: PromiseError, userdata: ?*anyopaque) v
     if (managed_ptr.interface.release() == 1) managed_ptr.interface.deinit(managed_ptr.allocator);
     managed_ptr.allocator.destroy(managed_ptr);
 }
+
+/// Requests listener to be added.
 pub fn registerListener(c: *Connection, impl: anytype, rule: MatchRule, allocator: mem.Allocator) !void {
     _ = impl.interface.reference();
     errdefer if (impl.interface.release() == 1) impl.interface.deinit(allocator);
@@ -452,6 +483,7 @@ pub fn registerListener(c: *Connection, impl: anytype, rule: MatchRule, allocato
     if (promise.release() == 1) promise.destroy();
 }
 
+/// Sends passed message down the handle.
 pub fn sendMessage(c: *Connection, m: *Message) !void {
     var w = try transport.Writer.init(c.default_allocator, c.handle, 4096);
     defer w.deinit();
@@ -508,6 +540,7 @@ pub fn deinit(c: *Connection) void {
         c.reader.deinit();
         c.dbus.deinit();
     }
+    posix.close(c.handle);
     c.default_allocator.destroy(c);
 }
 

@@ -30,6 +30,8 @@ pub const transport = @import("transport.zig");
 const std = @import("std");
 const Thread = std.Thread;
 
+/// Spawns looper thread that automatically handles incoming messages. Not recommended for production purposes.
+/// If you want dispatch message, implement your own looper based on Connection.exportFileDescriptor, Connection.advance and Connection.handleMessage.
 pub fn spawnLooperThread(gpa: std.mem.Allocator, c: *types.Connection, exit_condition: *bool) !Thread {
     return Thread.spawn(.{ .allocator = gpa, }, looper, .{gpa, c, exit_condition});
 }
@@ -63,9 +65,13 @@ pub const Bus = struct {
     }
 };
 
+/// Bus socket location.
 pub const BusType = union(enum) {
+    /// Extracted from $DBUS_SESSION_BUS_ADDRESS
     Session: void,
+    /// Equals to unix:path=/var/run/dbus/system_bus_socket
     System: void,
+    /// Must be in format described on https://dbus.freedesktop.org/doc/dbus-specification.html#addresses
     Custom: []const u8,
 };
 
@@ -120,6 +126,8 @@ fn parseUnixAddress(gpa: std.mem.Allocator, address: []const u8) ![]const u8 {
     return error.BusNotFound;
 }
 
+/// Connects to DBus using specified address. Uses passed gpa for all allocations.
+/// Returns authenticated Connection pointer. Caller owns the memory and must call Connection.deinit() when connection is no longer needed.
 pub fn connect(gpa: std.mem.Allocator, bus: BusType) !*types.Connection {
     var env = try std.process.getEnvMap(gpa);
     defer env.deinit();
