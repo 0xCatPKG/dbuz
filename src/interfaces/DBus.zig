@@ -1,371 +1,439 @@
-const std = @import("std");
 
+const DBus = @This();
+
+const std = @import("std");
 const dbuz = @import("../dbuz.zig");
 
-const DBusMessage = dbuz.types.DBusMessage;
-const DBusConnection = dbuz.types.DBusConnection;
-const DBusPendingResponse = dbuz.types.DBusPendingResponse;
-const DBusName = dbuz.types.DBusName;
-const DBusDictionary = dbuz.types.DBusDictionary;
+const Method = dbuz.types.Method;
+const Property = dbuz.types.Property;
+const SignalProxy = dbuz.types.SignalProxy;
 
-const DBusProperties = dbuz.interfaces.DBusProperties;
+const Connection = dbuz.types.Connection;
+const Promise = dbuz.types.Promise;
 
-const String = dbuz.types.DBusString;
+const String = dbuz.types.String;
 
-const DBusProxy = @This();
+pub const interface_name = "org.freedesktop.DBus";
 
-pub const Destination = "org.freedesktop.DBus";
-pub const Interface = Destination;
-pub const Path = "/org/freedesktop/DBus";
-
-pub const Error = error{
-    Failed, // Generic error
-    NoMemory,
-    /// Service is unknown and cannot be activated
-    ServiceUnknown,
-    /// The specified bus service name currently has no owner
-    NameHasNoOwner,
-    /// A message did not receive a reply. This error is usually caused by a timeout or if peer disconnects before replying.
-    NoReply,
-
-    /// Some limited resource was exhausted.
-    LimitsExceeded,
-    /// Access to a resource has beed deinied due to security policies.
-    AccessDenied,
-    Timeout,
-
-    /// Some arguments were invalid.
-    InvalidArgs,
-    FileNotFound,
-    FileExists,
-
-    UnknownMethod,
-    UnknownObject,
-    UnknownInterface,
-    UnknownProperty,
-    PropertyReadOnly,
-
-    InconsistentMessage,
-    InvalidSignature,
-    MatchRuleNotFound,
-    MatchRuleInvalid,
-
-    InteractiveAuthorizationRequired,
-
-    // Errors that not received from ERROR messages
-    /// The specified D-Bus bus address is invalid.
-    BadAddress,
-    /// Authentication failed.
-    AuthFailed,
-    /// Unable to connect to the bus with specified address.
-    NoServer,
-    Disconnected,
-    /// Generic input/output error, for example when accessing socket or other I/O context.
-    IOError,
-    NotSupported,
-};
-
-conn: *DBusConnection,
-
-pub fn init(connection: *DBusConnection) DBusProxy {
-    return .{
-        .conn = connection,
-    };
-}
-
-pub fn Hello(self: DBusProxy) !void {
-    var future = try self.conn.call(.{
-        .destination = Destination,
-        .path = Path,
-        .interface = Interface,
+pub fn Hello(i: *const DBus) !*Promise(String) {
+    var request = try i.c.startMessage();
+    request.type = .method_call;
+    request.fields = .{
+        .destination = "org.freedesktop.DBus",
+        .interface = "org.freedesktop.DBus",
         .member = "Hello",
-    }, .{}, self.conn.allocator) orelse unreachable;
-    defer future.deinit();
-    const reply = try future.wait(.{}) orelse return Error.Timeout;
-
-    const unique_name = try reply.read(String, self.conn.allocator);
-    self.conn.unique_name = unique_name.value;
+        .path = "/org/freedesktop/DBus",
+    };
+    const promise = try i.c.trackResponse(request, String);
+    errdefer if (promise.release() == 1) promise.destroy();
+    try i.c.sendMessage(&request);
+    return promise;
 }
 
-// RequestName
-pub const RequestNameFlags = packed struct {
+const RequestNameFlags = struct {
     allow_replacement: bool = false,
-    replace_existing: bool = false,
+    replace: bool = false,
     do_not_queue: bool = true,
-    _: u29 = 0,
+
+    pub fn toInteger(s: *const @This()) u32 {
+        var val: u32 = 0;
+        if (s.allow_replacement) val |= 0x01;
+        if (s.replace) val |= 0x02;
+        if (s.do_not_queue) val |= 0x04;
+        return val;
+    }
 };
-
-/// Requests a name on the bus.
-///
-/// NOTE: Names created by this method are not automatically added to the connection
-pub fn RequestName(self: DBusProxy, name: []const u8, flags: RequestNameFlags) !void {
-    const _flags: u32 = @bitCast(flags);
-    const _name: String = .{ .value = name };
-
-    const future = try self.conn.call(.{
-        .destination = Destination,
-        .path = Path,
-        .interface = Interface,
+const RequestNameResponse = enum (u32) {
+    primary_owner = 1,
+    in_queue = 2,
+    exists = 3,
+    already_owned = 4,
+    _
+};
+pub fn RequestName(i: *const DBus, name: []const u8, flags: RequestNameFlags) !*Promise(RequestNameResponse) {
+    var request = try i.c.startMessage();
+    request.type = .method_call;
+    request.fields = .{
+        .destination = "org.freedesktop.DBus",
+        .interface = "org.freedesktop.DBus",
         .member = "RequestName",
-    }, .{ _name, _flags }, self.conn.allocator) orelse unreachable;
-    defer future.deinit();
-
-    const reply = try future.wait(.{}) orelse return Error.Timeout;
-
-    const status = try reply.read(u32, self.conn.allocator);
-    return switch (status) {
-        1 => {},
-        2 => DBusName.Error.Queued,
-        3 => DBusName.Error.AlreadyExists,
-        4 => DBusName.Error.AlreadyOwned,
-        else => DBusName.Error.UnexpectedError,
+        .path = "/org/freedesktop/DBus",
+        .signature = "su",
     };
+
+
+    const w = request.writer();
+    try w.write(.{String{.value = name}, flags.toInteger()});
+
+    const promise = try i.c.trackResponse(request, RequestNameResponse);
+    errdefer if (promise.release() == 1) promise.destroy();
+
+    try i.c.sendMessage(&request);
+    return promise;
 }
 
-/// Asks the bus to release the name. You can call this method if you care about the result.
-pub fn ReleaseName(self: DBusProxy, name: []const u8) !void {
-    const future = try self.conn.call(.{
-        .destination = Destination,
-        .path = Path,
-        .interface = Interface,
+const ReleaseNameResponse = enum (u32) {
+    released = 1,
+    non_existent = 2,
+    not_owner = 3,
+    _
+};
+pub fn ReleaseName(i: *const DBus, name: []const u8) !*Promise(ReleaseNameResponse) {
+    var request = try i.c.startMessage();
+    request.type = .method_call;
+    request.fields = .{
+        .destination = "org.freedesktop.DBus",
+        .interface = "org.freedesktop.DBus",
         .member = "ReleaseName",
-    }, .{String{ .value = name }}, self.conn.allocator) orelse unreachable;
-    defer future.deinit();
-    const reply = try future.wait(.{}) orelse return Error.Timeout;
-
-    const status = try reply.read(u32, self.conn.allocator);
-    return switch (status) {
-        1 => {},
-        2 => DBusName.Error.NoSuchName,
-        3 => DBusName.Error.NotOwner,
-        else => DBusName.Error.UnexpectedError,
+        .path = "/org/freedesktop/DBus",
+        .signature = "s",
     };
+
+    const w = request.writer();
+    try w.write(String{.value = name});
+    
+    const promise = try i.c.trackResponse(request, ReleaseNameResponse);
+    errdefer if (promise.release() == 1) promise.destroy();
+
+    try i.c.sendMessage(&request);
+    return promise;
 }
 
-pub fn ListQueuedOwners(self: DBusProxy, name: []const u8) ![]const String {
-    const future = try self.conn.call(.{ .destination = Destination, .path = Path, .interface = Interface, .member = "ListQueuedOwners" }, .{String{ .value = name }}, self.conn.allocator) orelse unreachable;
-
-    defer future.deinit();
-    const reply = try future.wait(.{}) orelse return Error.Timeout;
-
-    return reply.read([]const String, self.conn.allocator);
-}
-
-pub fn ListNames(self: DBusProxy) ![]const String {
-    const future = try self.conn.call(.{ .destination = Destination, .path = Path, .interface = Interface, .member = "ListNames" }, .{}, self.conn.allocator) orelse unreachable;
-
-    defer future.deinit();
-    const reply = try future.wait(.{}) orelse return Error.Timeout;
-
-    return reply.read([]const String, self.conn.allocator);
-}
-
-pub fn ListActivatableNames(self: DBusProxy) ![]const String {
-    const future = try self.conn.call(.{ .destination = Destination, .path = Path, .interface = Interface, .member = "ListActivatableNames" }, .{}, self.conn.allocator) orelse unreachable;
-
-    defer future.deinit();
-    const reply = try future.wait(.{}) orelse return Error.Timeout;
-
-    return reply.read([]const String, self.conn.allocator);
-}
-
-pub fn NameHasOwner(self: DBusProxy, name: []const u8) !bool {
-    const future = try self.conn.call(.{ .destination = Destination, .path = Path, .interface = Interface, .member = "NameHasOwner" }, .{String{ .value = name }}, self.conn.allocator) orelse unreachable;
-
-    defer future.deinit();
-    const reply = try future.wait(.{}) orelse return Error.Timeout;
-
-    return reply.read(bool, self.conn.allocator);
-}
-
-pub fn StartServiceByName(self: DBusProxy, name: []const u8, flags: u32) !void {
-    const future = try self.conn.call(.{ .destination = Destination, .path = Path, .interface = Interface, .member = "StartServiceByName" }, .{ String{ .value = name }, flags }, self.conn.allocator) orelse unreachable;
-
-    defer future.deinit();
-    const reply = try future.wait(.{}) orelse return error.Timeout;
-
-    if (reply.message_type == .ERROR) return error.DBusError;
-
-    const status = try reply.read(u32, self.conn.allocator);
-    return switch (status) {
-        1 => {},
-        2 => error.ServiceAlreadyRunning,
-        else => error.UnexpectedError,
+pub fn ListQueuedOwners(i: *const DBus, name: []const u8) !*Promise([]String) {
+    var request = try i.c.startMessage();
+    request.type = .method_call;
+    request.fields = .{
+        .destination = "org.freedesktop.DBus",
+        .interface = "org.freedesktop.DBus",
+        .member = "ListQueuedOwners",
+        .path = "/org/freedesktop/DBus",
+        .signature = "s",
     };
+
+    const w = request.writer();
+    try w.write(String{.value = name});
+    
+    const promise = try i.c.trackResponse(request, []String);
+    errdefer if (promise.release() == 1) promise.destroy();
+
+    try i.c.sendMessage(&request);
+    return promise;
 }
 
-pub fn UpdateActivationEnvironment(self: DBusProxy, environment: DBusDictionary.from(String, String)) !void {
-    const future = try self.conn.call(.{ .destination = Destination, .path = Path, .interface = Interface, .member = "UpdateActivationEnvironment" }, .{environment}, self.conn.allocator) orelse unreachable;
+pub fn ListNames(i: *const DBus) !*Promise([]String) {
+    var request = try i.c.startMessage();
+    request.type = .method_call;
+    request.fields = .{
+        .destination = "org.freedesktop.DBus",
+        .interface = "org.freedesktop.DBus",
+        .member = "ListNames",
+        .path = "/org/freedesktop/DBus",
+    };
+    
+    const promise = try i.c.trackResponse(request, []String);
+    errdefer if (promise.release() == 1) promise.destroy();
 
-    defer future.deinit();
-    _ = try future.wait(.{}) orelse return Error.Timeout;
+    try i.c.sendMessage(&request);
+    return promise;
 }
 
-pub fn GetNameOwner(self: DBusProxy, name: []const u8) !String {
-    const future = try self.conn.call(.{ .destination = Destination, .path = Path, .interface = Interface, .member = "GetNameOwner" }, .{String{ .value = name }}, self.conn.allocator) orelse unreachable;
+pub fn ListActivatableNames(i: *const DBus) !*Promise([]String) {
+    var request = try i.c.startMessage();
+    request.type = .method_call;
+    request.fields = .{
+        .destination = "org.freedesktop.DBus",
+        .interface = "org.freedesktop.DBus",
+        .member = "ListActivatableNames",
+        .path = "/org/freedesktop/DBus",
+    };
+    
+    const promise = try i.c.trackResponse(request, []String);
+    errdefer if (promise.release() == 1) promise.destroy();
 
-    defer future.deinit();
-    const reply = try future.wait(.{}) orelse return Error.Timeout;
-
-    return reply.read(String, self.conn.allocator);
+    try i.c.sendMessage(&request);
+    return promise;
 }
 
-pub fn GetConnectionUnixUser(self: DBusProxy, bus_name: []const u8) !u32 {
-    const future = try self.conn.call(.{ .destination = Destination, .path = Path, .interface = Interface, .member = "GetConnectionUnixUser" }, .{String{ .value = bus_name }}, self.conn.allocator) orelse unreachable;
+pub fn NameHasOwner(i: *const DBus, name: []const u8) !*Promise(bool) {
+    var request = try i.c.startMessage();
+    request.type = .method_call;
+    request.fields = .{
+        .destination = "org.freedesktop.DBus",
+        .interface = "org.freedesktop.DBus",
+        .member = "NameHasOwner",
+        .path = "/org/freedesktop/DBus",
+        .signature = "s",
+    };
 
-    defer future.deinit();
-    const reply = try future.wait(.{}) orelse return Error.Timeout;
+    const w = request.writer();
+    try w.write(String{.value = name});
+    
+    const promise = try i.c.trackResponse(request, bool);
+    errdefer if (promise.release() == 1) promise.destroy();
 
-    return reply.read(u32, self.conn.allocator);
+    try i.c.sendMessage(&request);
+    return promise;
 }
 
-pub fn GetConnectionUnixProcessID(self: DBusProxy, bus_name: []const u8) !u32 {
-    const future = try self.conn.call(.{ .destination = Destination, .path = Path, .interface = Interface, .member = "GetConnectionUnixProcessID" }, .{String{ .value = bus_name }}, self.conn.allocator) orelse unreachable;
+const StartServiceByNameFlags = struct {
+    pub fn toInteger(_: *const @This()) u32 { return 0; }
+};
+const StartServiceByNameResponse = enum (u32) {
+    success = 1,
+    already_running = 2,
+    _
+};
+pub fn StartServiceByName(i: *const DBus, name: []const u8, flags: StartServiceByNameFlags) !*Promise(StartServiceByNameResponse) {
+    var request = try i.c.startMessage();
+    request.type = .method_call;
+    request.fields = .{
+        .destination = "org.freedesktop.DBus",
+        .interface = "org.freedesktop.DBus",
+        .member = "StartServiceByName",
+        .path = "/org/freedesktop/DBus",
+        .signature = "su",
+    };
 
-    defer future.deinit();
-    const reply = try future.wait(.{}) orelse return Error.Timeout;
 
-    return reply.read(u32, self.conn.allocator);
+    const w = request.writer();
+    try w.write(.{String{.value = name}, flags.toInteger()});
+
+    const promise = try i.c.trackResponse(request, StartServiceByNameResponse);
+    errdefer if (promise.release() == 1) promise.destroy();
+
+    try i.c.sendMessage(&request);
+    return promise;
+
 }
 
-const ConnectionCredentialsValueTypes = union(enum) {
-    uint32: u32,
-    fd: std.fs.File,
-    array_uint32: []u32,
+const EnvironmentDict = dbuz.types.Dict(String, String);
+pub fn UpdateActivationEnvironment(i: *const DBus, environment: EnvironmentDict) !*Promise(void) {
+    var request = try i.c.startMessage();
+    request.type = .method_call;
+    request.fields = .{
+        .destination = "org.freedesktop.DBus",
+        .interface = "org.freedesktop.DBus",
+        .member = "UpdateActivationEnvironment",
+        .path = "/org/freedesktop/DBus",
+        .signature = "a{ss}",
+    };
+
+
+    const w = request.writer();
+    try w.write(environment);
+
+    const promise = try i.c.trackResponse(request, void);
+    errdefer if (promise.release() == 1) promise.destroy();
+
+    try i.c.sendMessage(&request);
+    return promise;
+}
+
+pub fn GetNameOwner(i: *const DBus, name: []const u8) !*Promise(String) {
+    var request = try i.c.startMessage();
+    request.type = .method_call;
+    request.fields = .{
+        .destination = "org.freedesktop.DBus",
+        .interface = "org.freedesktop.DBus",
+        .member = "GetNameOwner",
+        .path = "/org/freedesktop/DBus",
+        .signature = "s",
+    };
+
+
+    const w = request.writer();
+    try w.write(String{.value = name});
+
+    const promise = try i.c.trackResponse(request, String);
+    errdefer if (promise.release() == 1) promise.destroy();
+
+    try i.c.sendMessage(&request);
+    return promise;
+}
+
+pub fn GetConnectionUnixUser(i: *const DBus, name: []const u8) !*Promise(u32) {
+    var request = try i.c.startMessage();
+    request.type = .method_call;
+    request.fields = .{
+        .destination = "org.freedesktop.DBus",
+        .interface = "org.freedesktop.DBus",
+        .member = "GetConnectionUnixUser",
+        .path = "/org/freedesktop/DBus",
+        .signature = "s",
+    };
+
+
+    const w = request.writer();
+    try w.write(String{.value = name});
+
+    const promise = try i.c.trackResponse(request, u32);
+    errdefer if (promise.release() == 1) promise.destroy();
+
+    try i.c.sendMessage(&request);
+    return promise;
+}
+
+pub fn GetConnectionUnixProcessID(i: *const DBus, name: []const u8) !*Promise(u32) {
+    var request = try i.c.startMessage();
+    request.type = .method_call;
+    request.fields = .{
+        .destination = "org.freedesktop.DBus",
+        .interface = "org.freedesktop.DBus",
+        .member = "GetConnectionUnixProcessID",
+        .path = "/org/freedesktop/DBus",
+        .signature = "s",
+    };
+
+
+    const w = request.writer();
+    try w.write(String{.value = name});
+
+    const promise = try i.c.trackResponse(request, u32);
+    errdefer if (promise.release() == 1) promise.destroy();
+
+    try i.c.sendMessage(&request);
+    return promise;
+}
+
+const CredentialsValue = union (enum) {
+    uint: u32,
+    uint_arr: []u32,
     string: String,
-    bytearray: []u8,
+    bytes: []const u8,
+    fd: std.fs.File,
 };
+const Credentials = dbuz.types.Dict(String, CredentialsValue);
+pub fn GetConnectionCredentials(i: *const DBus, name: []const u8) !*Promise(Credentials) {
+    var request = try i.c.startMessage();
+    request.type = .method_call;
+    request.fields = .{
+        .destination = "org.freedesktop.DBus",
+        .interface = "org.freedesktop.DBus",
+        .member = "GetConnectionCredentials",
+        .path = "/org/freedesktop/DBus",
+        .signature = "s",
+    };
 
-const ConnectionCredentialsVardict = DBusDictionary.from(String, ConnectionCredentialsValueTypes);
 
-pub const ConnectionCredentials = struct {
-    unix_user_id: ?u32 = null,
-    unix_group_ids: ?[]const u32 = null,
-    process_fd: ?std.fs.File = null,
-    process_id: ?u32 = null,
-    windows_sid: ?String = null,
-    linux_security_label: ?[]const u8 = null,
+    const w = request.writer();
+    try w.write(String{.value = name});
 
-    _source: ConnectionCredentialsVardict,
+    const promise = try i.c.trackResponse(request, Credentials);
+    errdefer if (promise.release() == 1) promise.destroy();
 
-    pub fn init(source: ConnectionCredentialsVardict) ConnectionCredentials {
-        var self: ConnectionCredentials = .{ ._source = source };
+    try i.c.sendMessage(&request);
+    return promise;
+}
 
-        var it = self._source.iterator();
-        while (it.next()) |pair| {
-            const key = pair.key_ptr.value;
-            if (std.mem.eql(u8, "UnixUserID", key)) {
-                self.unix_user_id = pair.value_ptr.uint32;
-            } else if (std.mem.eql(u8, "UnixGroupIDs", key)) {
-                self.unix_group_ids = pair.value_ptr.array_uint32;
-            } else if (std.mem.eql(u8, "ProcessID", key)) {
-                self.process_id = pair.value_ptr.uint32;
-            } else if (std.mem.eql(u8, "ProcessFD", key)) {
-                self.process_fd = pair.value_ptr.fd;
-            } else if (std.mem.eql(u8, "WindowsSID", key)) {
-                self.windows_sid = pair.value_ptr.string;
-            } else if (std.mem.eql(u8, "LinuxSecurityLabel", key)) {
-                self.linux_security_label = pair.value_ptr.bytearray;
-            }
-        }
+pub fn AddMatch(i: *const DBus, rule: []const u8) !*Promise(void) {
+    var request = try i.c.startMessage();
+    request.type = .method_call;
+    request.fields = .{
+        .destination = "org.freedesktop.DBus",
+        .interface = "org.freedesktop.DBus",
+        .member = "AddMatch",
+        .path = "/org/freedesktop/DBus",
+        .signature = "s",
+    };
 
-        return self;
+
+    const w = request.writer();
+    try w.write(String{.value = rule});
+
+    const promise = try i.c.trackResponse(request, void);
+    errdefer if (promise.release() == 1) promise.destroy();
+
+    try i.c.sendMessage(&request);
+    return promise;
+}
+
+pub fn RemoveMatch(i: *const DBus, rule: []const u8) !*Promise(void) {
+    var request = try i.c.startMessage();
+    request.type = .method_call;
+    request.fields = .{
+        .destination = "org.freedesktop.DBus",
+        .interface = "org.freedesktop.DBus",
+        .member = "RemoveMatch",
+        .path = "/org/freedesktop/DBus",
+        .signature = "s",
+    };
+
+
+    const w = request.writer();
+    try w.write(String{.value = rule});
+
+    const promise = try i.c.trackResponse(request, void);
+    errdefer if (promise.release() == 1) promise.destroy();
+
+    try i.c.sendMessage(&request);
+    return promise;
+}
+
+pub fn GetId(i: *const DBus) !*Promise(String) {
+    var request = try i.c.startMessage();
+    request.type = .method_call;
+    request.fields = .{
+        .destination = "org.freedesktop.DBus",
+        .interface = "org.freedesktop.DBus",
+        .member = "GetId",
+        .path = "/org/freedesktop/DBus",
+    };
+
+    const promise = try i.c.trackResponse(request, String);
+    errdefer if (promise.release() == 1) promise.destroy();
+
+    try i.c.sendMessage(&request);
+    return promise;
+}
+
+c: *Connection,
+NameOwnerChanged: SignalProxy(struct { String, String, String }),
+NameLost: SignalProxy(struct { String }),
+NameAcquired: SignalProxy(struct { String }),
+ActivatableServicesChanged: SignalProxy(struct {}),
+interface: Interface = .{
+    .name = DBus.interface_name,
+    .connection = null,
+    .refcounter = .init(1),
+    .description = "",
+    .object_path = null,
+    .vtable = &.{
+        .method_call = null,
+        .property_op = null,
+        .signal = &signal,
+
+        .destroy = &destroy,
     }
+},
 
-    pub fn deinit(self: *ConnectionCredentials) void {
-        var it = self._source.iterator();
-        while (it.next()) |pair| {
-            switch (pair.value_ptr.*) {
-                .fd => |fd| {
-                    fd.close();
-                },
-                .string => |str| {
-                    str.deinit(self._source.allocator);
-                },
-                .bytearray => |slice| {
-                    self._source.allocator.free(slice);
-                },
-                .array_uint32 => |slice| {
-                    self._source.allocator.free(slice);
-                },
-                else => {},
-            }
-        }
-        self._source.deinit();
-    }
-};
-
-pub fn GetConnectionCredentials(self: DBusProxy, bus_name: []const u8) !ConnectionCredentials {
-    const future = try self.conn.call(.{ .destination = Destination, .path = Path, .interface = Interface, .member = "GetConnectionCredentials" }, .{String{ .value = bus_name }}, self.conn.allocator) orelse unreachable;
-
-    defer future.deinit();
-    const reply = try future.wait(.{}) orelse return error.Timeout;
-
-    if (reply.message_type == .ERROR) return error.DBusError;
-
-    const vardict = try reply.read(ConnectionCredentialsVardict, self.conn.allocator);
-    return ConnectionCredentials.init(vardict);
+pub fn init(c: *Connection) !DBus {
+    return .{
+        .c = c,
+        .ActivatableServicesChanged = .init(c.default_allocator),
+        .NameAcquired = .init(c.default_allocator),
+        .NameLost = .init(c.default_allocator),
+        .NameOwnerChanged = .init(c.default_allocator),
+    };
 }
 
-pub fn GetAdtAuditSessionData(self: DBusProxy, bus_name: []const u8) ![]const u8 {
-    const future = try self.conn.call(.{ .destination = Destination, .path = Path, .interface = Interface, .member = "GetAdtAuditSessionData" }, .{String{ .value = bus_name }}, self.conn.allocator) orelse unreachable;
-
-    defer future.deinit();
-    const reply = try future.wait(.{}) orelse return Error.Timeout;
-
-    return reply.read([]const u8, self.conn.allocator);
+pub fn deinit(i: *DBus) void {
+    i.ActivatableServicesChanged.deinit();
+    i.NameAcquired.deinit();
+    i.NameLost.deinit();
+    i.NameOwnerChanged.deinit();
 }
 
-pub fn AddMatch(self: DBusProxy, rule: []const u8) !void {
-    const future = try self.conn.call(.{ .destination = Destination, .path = Path, .interface = Interface, .member = "AddMatch" }, .{String{ .value = rule }}, self.conn.allocator) orelse unreachable;
+fn destroy(_: *dbuz.types.Interface, _: mem.Allocator) void {}
 
-    defer future.deinit();
-    _ = try future.wait(.{}) orelse return Error.Timeout;
+fn signal(i: *Interface, m: *Message, gpa: mem.Allocator) Interface.Error!void {
+    const dbus: *DBus = @fieldParentPtr("interface", i);
+    return
+         if (mem.eql(u8, m.fields.member.?, "NameOwnerChanged")) dbus.NameOwnerChanged.receive(m, gpa) catch error.HandlingFailed
+    else if (mem.eql(u8, m.fields.member.?, "NameAcquired")) dbus.NameAcquired.receive(m, gpa) catch error.HandlingFailed
+    else if (mem.eql(u8, m.fields.member.?, "NameLost")) dbus.NameLost.receive(m, gpa) catch error.HandlingFailed
+    else if (mem.eql(u8, m.fields.member.?, "ActivatableServicesChanged")) dbus.ActivatableServicesChanged.receive(m, gpa) catch error.HandlingFailed;
 }
 
-pub fn RemoveMatch(self: DBusProxy, rule: []const u8) !void {
-    const future = try self.conn.call(.{ .destination = Destination, .path = Path, .interface = Interface, .member = "RemoveMatch" }, .{String{ .value = rule }}, self.conn.allocator) orelse unreachable;
-
-    defer future.deinit();
-    _ = try future.wait(.{}) orelse return Error.Timeout;
-}
-
-pub fn GetId(self: DBusProxy) !String {
-    const future = try self.conn.call(.{ .destination = Destination, .path = Path, .interface = Interface, .member = "GetId" }, .{}, self.conn.allocator) orelse unreachable;
-
-    defer future.deinit();
-    const reply = try future.wait(.{}) orelse return Error.Timeout;
-
-    return reply.read(String, self.conn.allocator);
-}
-
-pub const Listeners = struct {
-    conn: *DBusConnection,
-    allocator: std.mem.Allocator,
-
-    pub fn init(userdata: *anyopaque, allocator: std.mem.Allocator) Listeners {
-        const conn: *DBusConnection = @alignCast(@ptrCast(userdata));
-        return .{
-            .conn = conn,
-            .allocator = allocator,
-        };
-    }
-
-    pub fn NameLost(self: *Listeners, name: String) !void {
-        self.conn.nameLost(name.value);
-    }
-
-    pub fn NameAcquired(self: *Listeners, name: String) !void {
-        self.conn.nameAcquired(name.value);
-    }
-};
-
-pub fn getFeatures(self: DBusProxy, allocator: std.mem.Allocator) ![]const String {
-    const props = try DBusProperties.init(self.conn, allocator);
-    return try props.getProperty([]String, Path, Destination, Interface, "Features", allocator);
-}
-
-pub fn getInterfaces(self: DBusProxy, allocator: std.mem.Allocator) ![]const String {
-    const props = try DBusProperties.init(self.conn, allocator);
-    return try props.getProperty([]String, Path, Destination, Interface, "Interfaces", allocator);
-}
+const Interface = dbuz.types.Interface;
+const Message = dbuz.types.Message;
+const mem = std.mem;

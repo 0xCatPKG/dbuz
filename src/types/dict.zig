@@ -1,4 +1,3 @@
-
 const std = @import("std");
 const autoHash = std.hash.autoHashStrat;
 const Wyhash = std.hash.Wyhash;

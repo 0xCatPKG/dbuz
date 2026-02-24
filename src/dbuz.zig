@@ -1,213 +1,156 @@
-const BusType = union(enum) { Session: void, System: void, Path: []const u8, UnixFD: i32 };
-
-const Options = struct { bus: BusType = .Session, enable_introspection: bool = true, config: types.DBusConnection.Options = .{} };
-
-pub const ConnectionCreationError = error{
-    BusNotAvailable,
-    ConnectionRefused,
-    ConnectionLost,
-    TransportNotSupported,
-    Timeout,
-} || std.mem.Allocator.Error;
-
-const logger = std.log.scoped(.dbuz);
-
-fn getFDByBusType(bus: BusType, allocator: std.mem.Allocator) !i32 {
-    const stream = blk: switch (bus) {
-        .Session => {
-            var env = std.process.getEnvMap(allocator) catch return error.OutOfMemory;
-            defer env.deinit();
-
-            const addresses = env.get("DBUS_SESSION_BUS_ADDRESS") orelse {
-                return error.BusNotAvailable;
-            };
-
-            var address_it = std.mem.splitScalar(u8, addresses, ';');
-            while (address_it.next()) |address| {
-                var it = std.mem.splitScalar(u8, address, ':');
-                const transport = it.next() orelse continue;
-                var param_it = std.mem.splitScalar(u8, (it.next() orelse continue), '=');
-
-                const key = param_it.next() orelse continue;
-                const value = param_it.next() orelse continue;
-
-                if (std.mem.eql(u8, transport, "unix")) {
-                    const path = if (std.mem.eql(u8, key, "path")) try std.fmt.allocPrint(allocator, "{s}", .{value}) else if (std.mem.eql(u8, key, "abstract")) try std.fmt.allocPrint(allocator, "\x00{s}", .{value}) else continue;
-                    defer allocator.free(path);
-                    const stream = std.net.connectUnixSocket(path) catch return error.ConnectionRefused;
-                    break :blk stream;
-                } else {
-                    return error.TransportNotSupported;
-                }
-            }
-
-            return error.BusNotAvailable;
-        },
-        .System => {
-            break :blk std.net.connectUnixSocket("/run/dbus/system_bus_socket") catch return error.ConnectionRefused;
-        },
-        .Path => |path| {
-            break :blk std.net.connectUnixSocket(path) catch return error.ConnectionRefused;
-        },
-        .UnixFD => |fd| {
-            break :blk std.net.Stream{ .handle = fd };
-        },
-    };
-    return stream.handle;
-}
-
-pub fn connect(allocator: std.mem.Allocator, options: Options) ConnectionCreationError!*types.DBusConnection {
-    const fd = try getFDByBusType(options.bus, allocator);
-    errdefer std.posix.close(fd);
-
-    var connection = try types.DBusConnection.init(allocator, fd, options.config);
-    errdefer connection.deinit();
-
-    connection.connect() catch return error.ConnectionLost;
-    const reply = connection.call(.{ .destination = "org.freedesktop.DBus", .path = "/org/freedesktop/DBus", .interface = "org.freedesktop.DBus", .member = "Hello", .feedback = .{ .call = .{
-        .userdata = connection,
-        .method_reply = helloReply,
-        .method_error = helloError,
-    } } }, .{}, allocator) catch return error.ConnectionLost;
-    defer reply.?.deinit();
-
-    if (options.enable_introspection) {
-        connection.introspectable_ctx = .{ .allocator = connection.allocator, .connection = connection, .introspection_cache = .init(connection.allocator) };
-        _ = connection.registerInterface(interfaces.DBusIntrospectable, "org.freedesktop.DBus.Introspectable", "*", true, &connection.introspectable_ctx) catch return error.OutOfMemory;
-    }
-    _ = connection.registerInterface(interfaces.DBusProperties, "org.freedesktop.DBus.Properties", "*", true, connection) catch return error.OutOfMemory;
-    _ = connection.registerInterface(interfaces.DBusPeer, "org.freedesktop.DBus.Peer", "*", true, connection) catch return error.OutOfMemory;
-
-    _ = connection.addMatchGroup(interfaces.DBusCommon.Listeners, .{
-        .interface = "org.freedesktop.DBus",
-        .silent = true,
-    }, connection) catch return error.OutOfMemory;
-
-    return connection;
-}
-
-pub fn spawnPollingThread(conn: *types.DBusConnection, allocator: std.mem.Allocator) !struct { *bool, std.Thread } {
-    const running = try allocator.create(bool);
-    running.* = true;
-
-    errdefer allocator.destroy(running);
-
-    const thread = try std.Thread.spawn(.{}, poller, .{ conn, running });
-    thread.setName("DBuzConnectionPoller") catch {};
-    return .{ running, thread };
-}
-
-fn poller(conn: *types.DBusConnection, running: *bool) !void {
-    logger.debug("Dispatcher thread started with thread id {d}", .{std.Thread.getCurrentId()});
-
-    var poll_fds = [_]std.posix.pollfd{.{
-        .fd = conn.getFd(),
-        .events = std.posix.POLL.IN | std.posix.POLL.HUP,
-        .revents = 0,
-    }};
-
-    while (running.*) {
-        const evcount = std.posix.poll(&poll_fds, 100) catch continue;
-        if (evcount == 0) continue;
-        if (poll_fds[0].revents & std.posix.POLL.HUP != 0) {
-            conn.update(false) catch {};
-            return;
-        } else if (poll_fds[0].revents & std.posix.POLL.IN != 0) {
-            conn.update(false) catch |err| {
-                if (err == error.WouldBlock) continue;
-                if (err == error.ConnectionLost) {
-                    while (running.*) {}
-                    return;
-                }
-            };
-        }
-    }
-}
-
 pub const types = struct {
-    pub const DBusConnection = @import("types/DBusConnection.zig");
-    pub const DBusMessage = @import("types/DBusMessage.zig");
-    pub const DBusPendingResponse = @import("types/DBusPendingResponse.zig");
-    pub const DBusInterface = @import("types/Interface.zig");
-    pub const DBusName = @import("types/DBusName.zig");
-    pub const DBusDictionary = @import("types/dict.zig");
+    pub const String = @import("types/dbus_types.zig").String;
+    pub const ObjectPath = @import("types/dbus_types.zig").ObjectPath;
+    pub const Signature = @import("types/dbus_types.zig").Signature;
+    pub const Message = @import("types/Message.zig");
+    pub const Connection = @import("types/Connection.zig");
+    pub const Promise = @import("types/promise.zig").Promise;
+    pub const PromiseOpaque = @import("types/promise.zig").PromiseOpaque;
+    pub const PromiseError = @import("types/promise.zig").ErrorData;
+    pub const Interface = @import("types/Interface.zig");
 
-    pub const DBusString = @import("types/dbus_types.zig").String;
-    pub const DBusObjectPath = @import("types/dbus_types.zig").ObjectPath;
-    pub const DBusSignature = @import("types/dbus_types.zig").Signature;
+    pub const Method = @import("types/dbus_types.zig").Method;
+    pub const Property = @import("types/dbus_types.zig").Property;
+    pub const Signal = @import("types/dbus_types.zig").Signal;
+    pub const SignalProxy = @import("types/dbus_types.zig").SignalProxy;
 
-    pub const DBusProxy = @import("types/DBusProxy.zig");
-    pub const DBusMatchGroup = @import("types/MatchGroup.zig");
+    pub const MatchRule = @import("types/MatchRule.zig");
+
+    pub const Dict = @import("types/dict.zig").from;
 };
 
-pub const interfaces = struct {
-    pub const DBusIntrospectable = @import("interfaces/DBusIntrospectable.zig");
-    pub const DBusProperties = @import("interfaces/DBusProperties.zig");
-    pub const DBusPeer = @import("interfaces/DBusPeer.zig");
-    pub const DBusCommon = @import("interfaces/DBus.zig");
+pub const proxies = struct {
+    pub const DBus = @import("interfaces/DBus.zig");
 };
 
-pub const errors = struct {
-    pub const DBusConnectionError = types.DBusConnection.Error;
-    pub const DBusNameError = types.DBusName.Error;
-    pub const DBusInterfaceError = types.DBusInterface.Error;
-    pub const DBusSerializationError = types.DBusMessage.SerializationError;
-    pub const DBusDeserializationError = types.DBusMessage.DeserializationError;
-    pub const DBusError = interfaces.DBusCommon.Error;
-};
+pub const codec = @import("codec.zig");
+pub const auth = @import("sasl.zig");
+pub const transport = @import("transport.zig");
 
 const std = @import("std");
+const Thread = std.Thread;
 
-// Helpers
-
-fn helloReply(erased_conn: *anyopaque, msg: *types.DBusMessage) anyerror!void {
-    const conn = @as(*types.DBusConnection, @ptrCast(@alignCast(erased_conn)));
-    const unique_name = try msg.read(types.DBusString, conn.allocator);
-    conn.unique_name = unique_name.value;
+pub fn spawnLooperThread(gpa: std.mem.Allocator, c: *types.Connection, exit_condition: *bool) !Thread {
+    return Thread.spawn(.{ .allocator = gpa, }, looper, .{gpa, c, exit_condition});
 }
 
-fn helloError(erased_conn: *anyopaque, _: *types.DBusMessage) anyerror!void {
-    const conn = @as(*types.DBusConnection, @ptrCast(@alignCast(erased_conn)));
-    conn.state = .Errored;
-}
-
-pub inline fn isObjectPathValid(path: []const u8) bool {
-    if (path.len == 0) return false;
-    if (path[0] != '/') return false;
-    if (path.len == 1) return true;
-
-    var prev_is_slash: bool = true;
-
-    for (path[1..]) |c| {
-        if (c == '/' and prev_is_slash) return false;
-        prev_is_slash = c == '/';
-        switch (c) {
-            'A'...'Z', 'a'...'z', '0'...'9', '/', '_' => {},
-            else => return false,
+fn looper(gpa: std.mem.Allocator, c: *types.Connection, exit_condition: *bool) void {
+    while (!exit_condition.*) {
+        const m_a = c.advance(gpa) catch continue;
+        if (m_a) |ma| {
+            c.handleMessage(ma) catch continue;
         }
     }
-
-    return true;
 }
 
-pub inline fn isNameValid(name: []const u8) bool {
-    if (name.len == 0) return false;
-    if (name.len > 255) return false;
-    if (std.mem.count(u8, name, ".") < 2) return false;
 
-    var start_of_section: bool = true;
+pub const Bus = struct {
+    allow_fds: bool,
+    sockaddr: std.net.Address,
 
-    for (name) |c| {
-        if (c == '.' and start_of_section) return false;
-        start_of_section = c == '.';
-        switch (c) {
-            'A'...'Z', 'a'...'z', '.', '_' => {},
-            '0'...'9' => {
-                if (start_of_section) return false;
+    pub fn parse(gpa: std.mem.Allocator, address: []const u8) !Bus {
+        var ad_it = std.mem.splitScalar(u8, address, ':');
+        const protocol, const description = .{ ad_it.next() orelse unreachable, ad_it.next() orelse return error.MissingTransport };
+
+        if (std.mem.eql(u8, protocol, "unix")) {
+            const addr = try parseUnixAddress(gpa, description);
+            defer gpa.free(addr);
+            return .{
+                .allow_fds = true,
+                .sockaddr = try .initUnix(addr)
+            };
+        } else return error.UnsupportedTransport;
+    }
+};
+
+pub const BusType = union(enum) {
+    Session: void,
+    System: void,
+    Custom: []const u8,
+};
+
+fn parseUnixAddress(gpa: std.mem.Allocator, address: []const u8) ![]const u8 {
+    var address_it = std.mem.splitScalar(u8, address, ',');
+    var path: ?[]const u8 = null;
+    var directory: ?[]const u8 = null; 
+    var abstract: ?[]const u8 = null;
+    var runtime: ?bool = null;
+
+    while (true) {
+        const arg = address_it.next() orelse break;
+        if (arg.len == 0) break;
+
+        var arg_splitter = std.mem.splitScalar(u8, arg, '=');
+        
+        const key = arg_splitter.next() orelse return error.InvalidAddress;
+        const value = arg_splitter.next() orelse return error.InvalidAddress;
+
+        if (std.mem.eql(u8, key, "path")) if (path != null) return error.InvalidAddress else { path = value; }
+        else if (std.mem.eql(u8, key, "dir") or std.mem.eql(u8, key, "tmpdir")) if (directory != null) return error.InvalidAddress else { directory = value; }
+        else if (std.mem.eql(u8, key, "abstract")) if (abstract != null) return error.InvalidAddress else { abstract = value; }
+        else if (std.mem.eql(u8, key, "runtime")) if (runtime != null) return error.InvalidAddress else { runtime = std.mem.eql(u8, value, "yes"); };
+    }
+    if (path == null and directory == null and abstract == null and runtime == null) return error.InvalidAddress;
+    if (runtime != null) return error.RuntimeAddressUsupported;
+    var set_addrs: u8 = 0;
+    if (path != null) set_addrs += 1;
+    if (directory != null) set_addrs += 1;
+    if (abstract != null) set_addrs += 1;
+
+    if (set_addrs > 1) return error.InvalidAddress;
+
+    if (path) |p| return try gpa.dupe(u8, p);
+    if (directory) |d| {
+        var dir = std.fs.openDirAbsolute(d, .{
+            .iterate = true,
+            .access_sub_paths = true,
+        }) catch |err| {
+            if (err == error.AccessDenied) return err
+            else return error.BusNotFound;
+        };
+        defer dir.close();
+        var dir_it = dir.iterate();
+        while (dir_it.next() catch return error.BusNotFound) |dentry| {
+            if (dentry.kind != .unix_domain_socket) continue;
+            if (std.mem.startsWith(u8, dentry.name, "dbus-")) return try std.fmt.allocPrint(gpa, "{s}/{s}", .{d, dentry.name});
+        }
+        return error.BusNotFound;
+    }
+    if (abstract) |a| return try std.fmt.allocPrint(gpa, "\x00{s}", .{a});
+    return error.BusNotFound;
+}
+
+pub fn connect(gpa: std.mem.Allocator, bus: BusType) !*types.Connection {
+    var env = try std.process.getEnvMap(gpa);
+    defer env.deinit();
+    const address: []const u8 = switch (bus) {
+        .Custom => |c| c,
+        .System => "unix:path=/var/run/dbus/system_bus_socket",
+        .Session => blk: {
+            const session_bus_address = env.get("DBUS_SESSION_BUS_ADDRESS");
+            if (session_bus_address) |a| break :blk a;
+            return error.BusNotFound;
+        }
+    };
+
+    var addr_it = std.mem.splitScalar(u8, address, ';');
+    while (addr_it.next()) |addr| {
+        const bus_addr = try Bus.parse(gpa, addr);
+        const stream = switch (bus_addr.sockaddr.any.family) {
+            std.posix.AF.UNIX => blk: {
+                const sockfd = try std.posix.socket(std.posix.AF.UNIX, std.posix.SOCK.STREAM | std.posix.SOCK.CLOEXEC, 0);
+                errdefer std.posix.close(sockfd);
+                std.posix.connect(sockfd, &bus_addr.sockaddr.any, bus_addr.sockaddr.getOsSockLen()) catch continue;
+                break :blk std.net.Stream{ .handle = sockfd };
             },
-            else => return false,
-        }
+            else => continue,
+        };
+        errdefer stream.close();
+        auth.AuthClient.auth(gpa, stream) catch {
+            stream.close();
+            continue;
+        };
+        return types.Connection.init(gpa, stream.handle);
     }
-
-    return true;
+    return error.BusNotFound;
 }

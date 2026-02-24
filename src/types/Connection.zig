@@ -1,0 +1,513 @@
+
+const std = @import("std");
+const mem = std.mem;
+const net = std.net;
+const posix = std.posix;
+const atomic = std.atomic;
+
+const Thread = std.Thread;
+
+const dbuz = @import("../dbuz.zig");
+const transport = dbuz.transport;
+const trie = @import("../tree.zig");
+
+const Connection = @This();
+const Message = dbuz.types.Message;
+const Promise = dbuz.types.Promise;
+const PromiseOpaque = dbuz.types.PromiseOpaque;
+const PromiseError = dbuz.types.PromiseError;
+const Interface = dbuz.types.Interface;
+const MatchRule = dbuz.types.MatchRule;
+
+const default_buffer_size = 4096;
+
+const InterfaceManaged = struct {
+    interface: *Interface,
+    allocator: mem.Allocator,
+};
+
+const ListenerManaged = struct {
+    interface: *Interface,
+    rule: MatchRule,
+    allocator: mem.Allocator,
+    c: *Connection,
+};
+
+default_allocator: mem.Allocator,
+
+handle: posix.fd_t,
+reader: transport.Reader,
+
+fd_queue: std.ArrayList(i32) = .{},
+ucreds_queue: std.ArrayList(@import("../cmsg.zig").ucred) = .{},
+pidfd_queue: std.ArrayList(i32) = .{},
+
+enable_fds: bool = true,
+
+next_serial: atomic.Value(u32) = .init(1),
+
+pending_message: ?Message = null,
+pending_arena: ?*std.heap.ArenaAllocator = null,
+
+tracker: std.AutoArrayHashMapUnmanaged(u32, *PromiseOpaque) = .{},
+tracker_lock: Thread.Mutex = .{},
+
+object_tree: struct {
+    mutex: Thread.Mutex,
+    tree: trie.Tree(InterfaceManaged),
+},
+
+listeners: struct {
+    mutex: Thread.Mutex,
+    list: std.ArrayList(ListenerManaged),
+},
+
+dbus: dbuz.proxies.DBus,
+unique_name: ?[]const u8 = null,
+
+pub fn init(allocator: mem.Allocator, handle: posix.fd_t) !*Connection {
+    var reader = try transport.Reader.init(allocator, handle, default_buffer_size);
+    errdefer reader.deinit();
+    
+    const c = try allocator.create(Connection);
+
+    c.* = .{
+        .default_allocator = allocator,
+        .handle = handle,
+        .reader = reader,
+        .object_tree = .{
+            .mutex = .{},
+            .tree = .empty,
+        },
+        .listeners = .{
+            .mutex = .{},
+            .list = .empty,
+        },
+        .dbus = try .init(c),
+        .pending_message = null,
+        .pending_arena = null,
+    };
+    return c;
+}
+
+pub fn exportFileDescriptor(self: *const Connection) i32 {
+    return self.handle;
+}
+
+pub fn advance(self: *Connection, allocator: ?mem.Allocator) !?struct {Message, *std.heap.ArenaAllocator} {
+    const r = &self.reader.interface;
+
+    const alloc = if (allocator) |a| a else self.default_allocator;
+
+    const msg: *Message = if (self.pending_message) |*pm| @constCast(pm) else blk: {
+        const arena = try alloc.create(std.heap.ArenaAllocator);
+        arena.* = .init(alloc);
+        errdefer alloc.destroy(arena);
+        errdefer arena.deinit();
+
+        self.pending_message = try Message.initReading(arena.allocator(), r, &self.fd_queue);
+        self.pending_arena = arena;
+        break :blk @constCast(&self.pending_message.?);
+    };
+
+    while (true) {
+        if (self.reader.pendingControlMessageType()) |scm| {
+            switch (scm) {
+                .RIGHTS => {
+                    if (self.enable_fds) {
+                        var rights: [100]i32 = undefined;
+                        const rights_len = try self.reader.takeFileDescriptors(&rights);
+                        try self.fd_queue.appendSlice(self.default_allocator, rights[0..rights_len]);
+                    } else {
+                        self.reader.discardControlMessage();
+                    }
+                },
+                .CREDENTIALS => {
+                    const cred = try self.reader.takeCredentials();
+                    try self.ucreds_queue.append(self.default_allocator, cred);
+                },
+                .PIDFD => {
+                    const pidfd = try self.reader.takePidFD();
+                    try self.pidfd_queue.append(self.default_allocator, pidfd);
+                },
+                else => {}
+            }
+        }
+        if (msg.isComplete()) {
+            const m = self.pending_message orelse unreachable;
+            const a = self.pending_arena orelse unreachable;
+            self.pending_message = null;
+            return .{m, a};
+        }
+        _ = msg.continueReading() catch |err| {
+            switch (err) {
+                error.ReadFailed => break,
+                else => return err,
+            }
+        };
+    }
+    return null;
+}
+
+pub fn readingLoop(self: *Connection, allocator: mem.Allocator) !void {
+    while (true) {
+        const result = try self.advance(allocator);
+        if (result) |res| {
+            try self.handleMessage(res);
+        }
+    }
+}
+
+pub fn startMessage(self: *Connection) !Message {
+    const serial = self.next_serial.fetchAdd(1, .seq_cst);
+    var message = try Message.initWriting(self.default_allocator, .little, self.enable_fds);
+    message.serial = serial;
+    return message;
+}
+
+fn helloReplied(_: *Promise(dbuz.types.String), name: dbuz.types.String, _: *std.heap.ArenaAllocator, userdata: ?*anyopaque) void {
+    const c: *Connection = @alignCast(@ptrCast(userdata));
+    c.registerListener(&c.dbus, .{
+        .interface = "org.freedesktop.DBus",
+        .path = "/org/freedesktop/DBus",
+    }, c.default_allocator) catch {};
+    c.unique_name = c.default_allocator.dupe(u8, name.value) catch null;
+}
+
+fn helloFailed(_: *Promise(dbuz.types.String), _: PromiseError, _: ?*anyopaque) void { }
+
+pub fn helloAsync(c: *Connection) !*Promise(dbuz.types.String) {
+    const promise = try c.dbus.Hello();
+    promise.setupCallbacks(.{
+        .response = &helloReplied,
+        .@"error" = &helloFailed,
+        .timeout = null
+    }, c);
+
+    return promise;
+}
+
+pub fn hello(c: *Connection) !void {
+    const promise = try c.helloAsync();
+    defer if (promise.release() == 1) promise.destroy();
+    const value, const arena = try promise.wait(null);
+    switch (value) {
+        .response => return,
+        .@"error" => |e| return e.error_code,
+    }
+    _ = arena;
+}
+
+pub fn trackResponse(c: *Connection, message: Message, comptime T: type) !*Promise(T) {
+    const promise = try Promise(T).create(c.default_allocator);
+    errdefer promise.destroy();
+
+    c.tracker_lock.lock();
+    defer c.tracker_lock.unlock();
+
+    const entry = try c.tracker.getOrPut(c.default_allocator, message.serial);
+    if (entry.found_existing) return error.DuplicateSerial;
+    entry.value_ptr.* = &promise.interface;
+
+    return promise.reference();
+}
+
+pub fn promiseDeadlineReached(c: *Connection, serial: u32, timerfd: i32) !void {
+
+    c.tracker_lock.lock();
+    defer c.tracker_lock.unlock();
+
+    const entry = c.tracker.fetchSwapRemove(serial);
+    defer posix.close(timerfd);
+
+    if (!entry) {
+        return;
+    }
+
+    const promise = entry.?.value;
+    promise.vtable.timedout(promise);
+    if (promise.vtable.release(promise) == 1) promise.vtable.destroy(promise);
+}
+
+fn handleProperties(c: *Connection, m: *Message, arena: mem.Allocator) !void {
+    const r = try m.reader();
+    const interface_name = (try r.read(dbuz.types.String, arena)).value;
+    const branch = c.object_tree.tree.get( try trie.runtimePathWithLastComponent(m.fields.path.?, interface_name, arena) );
+    if (branch) |node| {
+        var response = try node.leaf.interface.vtable.property_op.?(node.leaf.interface, m, arena);
+        if (response) |*res| try c.sendMessage(res);
+    }
+}
+
+fn handleIntrospection(c: *Connection, m: *Message, arena: mem.Allocator) !void {
+    const branch = if (
+        !std.mem.eql(u8, m.fields.path.?, "/")
+    ) c.object_tree.tree.get( try trie.runtimeKey(m.fields.path.?, arena) )
+    else c.object_tree.tree.root;
+    if (branch) |node| {
+        var xml = std.Io.Writer.Allocating.init(arena);
+        defer xml.deinit();
+        const xml_w = &xml.writer;
+
+        errdefer |e| {
+            var error_reply: ?Message = c.startMessage() catch null;
+            if (error_reply) |*err| {
+                err.type = .@"error";
+                err.fields = .{
+                    .destination = m.fields.sender,
+                    .reply_serial = m.serial,
+                    .error_name = std.fmt.allocPrint(arena, "com.github.0xCatPKG.dbuz.Error.{s}", .{@errorName(e)}) catch null,
+                };
+                c.sendMessage(err) catch {};
+            }
+        }
+
+        _ = try xml_w.write("<!DOCTYPE node PUBLIC \"-//freedesktop//DTD D-BUS Object Introspection 1.0//EN\"\n\"http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd\">\n<node>\n");
+        switch (node) {
+            .branch => |b| {
+                var it = b.branches.iterator();
+                while (it.next()) |br| {
+                    switch (br.value_ptr.*) {
+                        .leaf => |l| {
+                            _ = try xml_w.write(l.interface.description);
+                        },
+                        .branch => {
+                            var buf: [256]u8 = undefined;
+                            _ = try xml_w.write(try std.fmt.bufPrint(&buf, "    <node name=\"{s}\"/>\n", .{br.key_ptr.*}));
+                        }
+                    }
+                }
+            },
+            .leaf => return error.UnknownObject,
+        }
+        _ = try xml_w.write("</node>\n");
+
+        var reply = try c.startMessage();
+        reply.type = .method_response;
+        reply.fields = .{
+            .destination = m.fields.sender,
+            .reply_serial = m.serial,
+            .signature = "s",
+        };
+        const w = reply.writer();
+        try w.write(dbuz.types.String{.value = xml.written()});
+        // std.debug.print("{s}\n", .{xml.written()});
+        return c.sendMessage(&reply);
+    } else {
+        var err = try c.startMessage();
+        err.type = .@"error";
+        err.fields = .{
+            .destination = m.fields.sender,
+            .reply_serial = m.serial,
+            .error_name = "org.freedesktop.DBus.Error.UnknownObject",
+        };
+        return c.sendMessage(&err);
+    }
+}
+
+pub fn handleMessage(c: *Connection, m_a: struct {Message, *std.heap.ArenaAllocator}) !void {
+    var message, const arena = m_a;
+    var handled: bool = false;
+
+    defer {
+        if (!handled) {
+            message.deinit();
+            arena.deinit();
+            arena.child_allocator.destroy(arena);
+        }
+    }
+
+    switch (message.type) {
+        .method_response, .@"error" => {
+            // Reply without reply_serial is protocol violation, so we silently drop it.
+            if (message.fields.reply_serial == null) return;
+
+            c.tracker_lock.lock();
+            const entry = c.tracker.fetchSwapRemove(message.fields.reply_serial.?);
+            c.tracker_lock.unlock();
+            if (entry == null) {
+                return;
+            }
+
+            const promise = entry.?.value;
+            promise.vtable.received(promise, message, arena);
+            if (promise.vtable.release(promise) == 1) promise.vtable.destroy(promise);
+            handled = true;
+        },
+        .method_call => {
+            // Sanity check
+            if (message.fields.sender == null or message.fields.interface == null or message.fields.member == null or message.fields.path == null) return;
+
+            c.object_tree.mutex.lock();
+            defer c.object_tree.mutex.unlock();
+
+            if (mem.eql(u8, message.fields.interface.?, "org.freedesktop.DBus.Properties")) {
+                try c.handleProperties(&message, arena.allocator());
+                return;
+            }
+
+            if (mem.eql(u8, message.fields.interface.?, "org.freedesktop.DBus.Introspectable")) {
+                try c.handleIntrospection(&message, arena.allocator());
+                return;
+            }
+
+            const child = c.object_tree.tree.get(try trie.runtimePathWithLastComponent(message.fields.path.?, message.fields.interface.?, arena.allocator()));
+            if (child) |node| {
+                var response = node.leaf.interface.vtable.method_call.?(node.leaf.interface, &message, arena.allocator()) catch return;
+                if (response) |*r| try c.sendMessage(r);
+
+            } else {
+                var err = try c.startMessage();
+                err.type = .@"error";
+                err.fields = .{
+                    .destination = message.fields.sender,
+                    .reply_serial = message.serial,
+                    .error_name = "org.freedesktop.DBus.Error.UnknownInterface",
+                };
+                try c.sendMessage(&err);
+            }
+        },
+        .signal => {
+            if (message.fields.path == null or message.fields.interface == null or message.fields.member == null or message.fields.sender == null) return;
+            
+            c.listeners.mutex.lock();
+            defer c.listeners.mutex.unlock();
+
+            for (c.listeners.list.items) |listener| {
+                if (!listener.rule.match(&message)) continue;
+                listener.interface.vtable.signal.?(listener.interface, &message, arena.allocator()) catch {};
+            }
+        },
+        else => {}
+    }
+}
+
+pub fn registerInterface(c: *Connection, impl: anytype, comptime path: []const u8, allocator: mem.Allocator) !void {
+    _ = impl.interface.reference();
+    errdefer if (impl.interface.release() == 1) impl.interface.deinit(allocator);
+    if (impl.interface.vtable.method_call == null or impl.interface.vtable.property_op == null) return error.InvalidVTable;
+
+    c.object_tree.mutex.lock();
+    defer c.object_tree.mutex.unlock();
+
+    const key = trie.comptimePathWithLastComponent(path, @TypeOf(impl.*).interface_name);
+    try c.object_tree.tree.insert(key, .{ .interface = &impl.interface, .allocator = allocator });
+    impl.interface.bind(c, path);
+}
+
+pub fn unregisterInterface(c: *Connection, impl: anytype, comptime path: []const u8) bool {
+    const key = trie.comptimePathWithLastComponent(path, @TypeOf(impl.*).interface_name);
+    
+    c.object_tree.mutex.lock();
+    defer c.object_tree.mutex.unlock();
+
+    const branch = c.object_tree.tree.get(key);
+    if (branch) |node| {
+        const managed = node.leaf;
+
+        if (&impl.interface != managed.interface) @panic("Logic error: &impl.interface != managed.interface");
+        if (managed.interface.release() == 1) managed.interface.deinit(managed.allocator);
+        return c.object_tree.tree.remove(key);
+    } else return false;
+}
+
+fn listenerAdded(_: *Promise(void), _: void, _: *std.heap.ArenaAllocator, userdata: ?*anyopaque) void {
+    const managed_ptr: *ListenerManaged = @alignCast(@ptrCast(userdata));
+    const managed = managed_ptr.*;
+    managed.allocator.destroy(managed_ptr);
+    managed.c.listeners.mutex.lock();
+    defer managed.c.listeners.mutex.unlock();
+
+    managed.c.listeners.list.append(managed.c.default_allocator, managed) catch {
+        if (managed.interface.release() == 1) managed.interface.deinit(managed.allocator);
+    };
+}
+fn listenerAddError(_: *Promise(void), _: PromiseError, userdata: ?*anyopaque) void {
+    const managed_ptr: *ListenerManaged = @alignCast(@ptrCast(userdata));
+    if (managed_ptr.interface.release() == 1) managed_ptr.interface.deinit(managed_ptr.allocator);
+    managed_ptr.allocator.destroy(managed_ptr);
+}
+pub fn registerListener(c: *Connection, impl: anytype, rule: MatchRule, allocator: mem.Allocator) !void {
+    _ = impl.interface.reference();
+    errdefer if (impl.interface.release() == 1) impl.interface.deinit(allocator);
+
+    const key = try rule.string(allocator);
+    defer allocator.free(key);
+
+    const managed = try allocator.create(ListenerManaged);
+    managed.* = .{
+        .allocator = allocator,
+        .interface = &impl.interface,
+        .rule = rule,
+        .c = c,
+    };
+
+    const promise = try c.dbus.AddMatch(key);
+    promise.setupCallbacks(.{
+        .timeout = null,
+        .response = &listenerAdded,
+        .@"error" = &listenerAddError,
+    }, managed);
+
+    if (promise.release() == 1) promise.destroy();
+}
+
+pub fn sendMessage(c: *Connection, m: *Message) !void {
+    var w = try transport.Writer.init(c.default_allocator, c.handle, 4096);
+    defer w.deinit();
+
+    const writer = &w.interface;
+    
+    var fds: []const i32 = undefined;
+    try m.write(writer, &fds);
+    
+    if (m.fields.unix_fd_amount > 0) {
+        try w.putFDs(fds);
+    }
+
+    try writer.flush();
+}
+
+pub fn deinit(c: *Connection) void {
+    {
+        if (c.pending_message) |*m| m.deinit();
+        // if (c.pending_arena) |a| {
+        //     // a.deinit();
+        //     // a.child_allocator.destroy(a);
+        // }
+        if (c.unique_name) |unique_name| c.default_allocator.free(unique_name);
+
+        c.tracker_lock.lock();
+        c.object_tree.mutex.lock();
+        c.listeners.mutex.lock();
+
+        defer c.tracker_lock.unlock();
+        defer c.object_tree.mutex.unlock();
+        defer c.listeners.mutex.unlock();
+
+        {
+            var it = c.tracker.iterator();
+            while (it.next()) |kv| {
+                const promise = kv.value_ptr.*;
+                if (promise.vtable.release(promise) == 1) promise.vtable.destroy(promise);
+            }
+        }
+        c.object_tree.tree.deinit(c.default_allocator);
+        {
+            for (c.listeners.list.items) |listener_managed| {
+                if (listener_managed.interface.release() == 1) listener_managed.interface.deinit(listener_managed.allocator);
+            }
+        }
+
+        for (c.fd_queue.items) |fd| (std.fs.File{ .handle = fd }).close();
+        for (c.pidfd_queue.items) |pid_fd| (std.fs.File{ .handle = pid_fd }).close();
+        c.fd_queue.deinit(c.default_allocator);
+        c.pidfd_queue.deinit(c.default_allocator);
+        c.ucreds_queue.deinit(c.default_allocator);
+
+        c.reader.deinit();
+        c.dbus.deinit();
+    }
+    c.default_allocator.destroy(c);
+}
+

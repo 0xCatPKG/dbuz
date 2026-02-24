@@ -5,11 +5,12 @@
     .minimum_zig_version = "0.14.1",
 
     .dependencies = .{
+        .xml = .{
+            .url = "git+https://github.com/edqx/dishwasher.git?branch=0.15.2#d0f03b6a4532f6f324a6640d474bfb653523c9ae",
+            .hash = "dishwasher-2.0.0-aXVByZyrAQApDLVb6eVdAvh2_kG_zokxdGGxlXdxwsDy",
+            .lazy = true
+        },
     },
 
-    .paths = .{
-        "build.zig",
-        "build.zig.zon",
-        "src"
-    },
+    .paths = .{ "build.zig", "build.zig.zon", "src" },
 }

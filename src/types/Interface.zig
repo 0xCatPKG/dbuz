@@ -1,451 +1,386 @@
-//! Interface for implementing DBus interfaces
-//! This interface provides a convenient way to implement DBus interfaces, by using compile time reflection.
-//! See docs/Interfaces.md for more information about how to implement interfaces using this dbuz.
 
+const Interface = @This();
 
 const std = @import("std");
+const mem = std.mem;
+const atomic = std.atomic;
 
-const Self = @This();
+const dbuz  = @import("../dbuz.zig");
+const types = @import("dbus_types.zig");
 
-const dbuz = @import("../dbuz.zig");
-const dbus_types = @import("dbus_types.zig");
+const Connection = dbuz.types.Connection;
+const Message    = dbuz.types.Message;
 
-const DBusMessage = dbuz.types.DBusMessage;
-const DBusName = dbuz.types.DBusName;
-const DBusConnection = dbuz.types.DBusConnection;
-const DBusDictionary = dbuz.types.DBusDictionary;
+const BuiltinType = std.builtin.Type;
 
-const DBusProperties = dbuz.interfaces.DBusProperties;
-const DBusIntrospectable = dbuz.interfaces.DBusIntrospectable;
+name:        []const u8,
+description: []const u8,
 
-const String = dbuz.types.DBusString;
-const Signature = dbuz.types.DBusSignature;
-const ObjectPath = dbuz.types.DBusObjectPath;
+connection:  ?*Connection = null,
+object_path: ?[]const u8 = null,
 
-const Type = std.builtin.Type;
+vtable: *const VTable,
+refcounter: atomic.Value(isize) = .init(1),
 
 pub const Error = error {
-    UnknownMethod,
-    UnknownInterface,
-} || DBusConnection.Error;
-
-ptr: *anyopaque, // Pointer to actual interface implementation
-vtable: *const VTable,
-path: []const u8,
-interface: []const u8,
-introspection: []const u8,
-hidden: bool = false,
-
-name: ?*DBusName,
-conn: *DBusConnection,
-
-pub const VTable = struct {
-    /// Route a call to the interface implementation
-    route_call: *const fn (*anyopaque, *DBusConnection, *DBusMessage) Error!void,
-    /// org.freedesktop.DBus.Properties
-    /// Property is defined as a function that receives interface prototype value pointer, may receive additional params, and may return an value
-    /// If property has it's return value as nonvoid type, it considered readable
-    /// If property has exactly 2 params, it considered writable
-    /// It is illegal to have a property with no return and no input params
-    property: *const fn (*anyopaque, *DBusConnection, *DBusMessage, []const u8, DBusProperties.Action) DBusProperties.Error!void,
-    all_properties: *const fn (*anyopaque, *DBusConnection, *DBusMessage) DBusProperties.Error!void,
-
-    deinit: *const fn (*anyopaque) void,
+    HandlingFailed,
 };
 
-pub fn init(
-    comptime InterfacePrototype: type, userdata: *anyopaque,
-    alloc: std.mem.Allocator,
-    object_path: []const u8,
-    interface_name: []const u8,
-    connection: *DBusConnection,
-    name: ?*DBusName,
-    /// Hide during dbus introspection
-    hidden: bool,
-) !Self {
+pub const VTable = struct {
+    method_call: ?*const fn (i: *Interface, message: *Message, allocator: mem.Allocator) Error!?Message,
+    property_op: ?*const fn (i: *Interface, message: *Message, allocator: mem.Allocator) Error!?Message,
+    signal: ?*const fn (i: *Interface, message: *Message, allocator: mem.Allocator) Error!void,
 
-    // Determine if the interface is valid
-    if (@hasDecl(InterfacePrototype, "init")) {
-        const initializer = @field(InterfacePrototype, "init");
-        if (@TypeOf(initializer) != fn (*anyopaque, std.mem.Allocator) anyerror!InterfacePrototype) @compileError("Interface prototype of type " ++ @typeName(InterfacePrototype) ++ \\ has invalid signature for init function:
-            \\ expected fn(*anyopaque, std.mem.Allocator) anyerror!InterfacePrototype, found
-            ++ @typeName(@TypeOf(initializer)));
-    } else {
-        @compileError("Interface prototype of type " ++ @typeName(InterfacePrototype) ++ " does not have a init function");
+    destroy: *const fn (i: *Interface, allocator: mem.Allocator) void,
+};
+
+pub fn AutoInterface(comptime T: type, comptime desc: ?*const []const u8) type {
+    if (!comptime @hasDecl(T, "interface_name"))
+    @compileError("Unable to create Interface from " ++ @typeName(T) ++ ": interface prototype missing interface_name declaration");
+    if (@TypeOf(T.interface_name) != []const u8)
+    @compileError("Unable to create Interface from " ++ @typeName(T) ++ ": interface_name is not of type []const u8 (got " ++ @typeName(@TypeOf(T.interface_name)) ++ " instead)");
+
+    const name = @field(T, "interface_name");
+    const description = desc orelse types.introspect(T);
+
+    const methods = methodList(T);
+    const properties = propertyList(T);
+    const signals = signalList(T);
+
+    const Properties, const TypeUnion = PropertiesStorage(T);
+
+    var enum_names: []const BuiltinType.EnumField = &.{};
+    inline for (signals, 0..) |signal_name, i| {
+        enum_names = enum_names ++ .{ BuiltinType.EnumField{ .name = signal_name, .value = i } };
     }
 
-    if (@hasDecl(InterfacePrototype, "deinit")) {
-        const initializer = @field(InterfacePrototype, "deinit");
-        if (@TypeOf(initializer) != fn (*InterfacePrototype) void) @compileError("Interface prototype of type " ++ @typeName(InterfacePrototype) ++ \\ has invalid signature for deinit function:
-            \\ expected fn(*InterfacePrototype) void, found
-            ++ @typeName(@TypeOf(initializer)));
-    }
-
-    const S = struct {
-        const IFaceSelf = @This();
-        const IFaceProto: type = InterfacePrototype;
-
-        allocator: std.mem.Allocator,
-        iface_impl: InterfacePrototype,
-        interface: []const u8,
-
-        introspection: ?[]const u8 = null,
-
-        pub fn init(allocator: std.mem.Allocator, udata: *anyopaque, interface: []const u8) !*IFaceSelf {
-            const self = try allocator.create(IFaceSelf);
-            errdefer allocator.destroy(self);
-            self.* = .{
-                .allocator = allocator,
-                .iface_impl = try InterfacePrototype.init(udata, allocator),
-                .interface = interface
-            };
-            return self;
+    const SignalNamesT = @Type(.{
+        .@"enum" = .{
+            .fields = enum_names,
+            .decls = &.{},
+            .is_exhaustive = true,
+            .tag_type = u32,
         }
+    });
 
-        pub fn deinit(erased_impl: *anyopaque) void {
-            const self: *IFaceSelf = @alignCast(@ptrCast(erased_impl));
-            if (@hasDecl(InterfacePrototype, "deinit")) {
-                const deinitializer = @field(InterfacePrototype, "deinit");
-                deinitializer(&self.iface_impl);
-            }
-            self.allocator.destroy(self);
-        }
+    const Impl = struct {
+        const Template = T;
+        pub const PropertiesType = Properties;
+        pub const PropertiesUnion = TypeUnion;
+        pub const SignalNames = SignalNamesT;
 
-        /// Codegen function for handling method calls using the compile time reflection.
-        pub fn route_call(erased_impl: *anyopaque, conn: *DBusConnection, msg: *DBusMessage) Error!void {
-            const self: *IFaceSelf = @alignCast(@ptrCast(erased_impl));
-            const typeinfo = @typeInfo(InterfacePrototype);
+        pub const interface_name = name;
 
-            var arena = std.heap.ArenaAllocator.init(self.allocator);
-            defer arena.deinit();
 
-            const allocator = arena.allocator();
+        data: Template = .{},
+        properties: Properties = undefined,
+        interface: Interface = .{
+            .name = name,
+            .description = description,
+            .vtable = &.{
+                .method_call = method_call,
+                .property_op = property_op,
+                .signal = null,
 
-            switch (typeinfo) {
-                else => @compileError("Invalid container type"),
-                .@"struct" => |s| {
-                    inline for (s.decls) |decl_| {
-                        const decl = @field(InterfacePrototype, decl_.name);
-                        const decl_info = @typeInfo(@TypeOf(decl));
-                        switch (decl_info) {
-                            else => continue,
-                            .@"fn" => |func| {
-                                // Method candidates should be public fn's with the first argument being *InterfacePrototype and all other arguments being dbus serializables. Optionally last argument can be *DBusMessage.
-                                comptime if (!DBusIntrospectable.isMethodNameValid(decl_.name)) continue;
-                                comptime if (func.params.len == 0) @compileError("Invalid method prototype for " ++ decl_.name ++ ": methods should take *" ++ @typeName(InterfacePrototype) ++ " as the first argument at least");
-                                comptime if (func.params[0].type.? != *InterfacePrototype) @compileError("Invalid method prototype for " ++ @typeName(decl) ++ ": First argument should be *" ++ @typeName(InterfacePrototype));
-
-                                comptime var has_message_arg: bool = false;
-
-                                inline for (func.params[1..], 0..) |param, i| {
-                                    if (param.type.? == *DBusMessage) {
-                                        comptime if (has_message_arg) @compileError("Invalid method prototype for " ++ decl_.name ++ ": Duplicate *" ++ @typeName(DBusMessage) ++ " argument");
-                                        if (i + 1 != func.params.len - 1) @compileError("Invalid method prototype for " ++ decl_.name ++ ": optional *DBusMessage argument must be the last argument, but is observed at position " ++ std.fmt.comptimePrint("{d} (from {d})", .{i, func.params.len - 1}));
-                                        has_message_arg = true;
-                                    }
-                                    comptime if (!dbus_types.isTypeSerializable(param.type.?) and param.type.? != *DBusMessage) @compileError("Unserializable type " ++ @typeName(param.type.?) ++ " in method " ++ decl_.name ++  "at position " ++ std.fmt.comptimePrint("{d}", .{i}));
-                                }
-
-                                // If method name matches member in message, this method is a method call we are looking for.
-                                if (std.mem.eql(u8, DBusIntrospectable.methodName(decl_.name), msg.member.?)) {
-                                    comptime var read_args_slice: [func.params.len-1-(if (has_message_arg) 1 else 0)]type = undefined;
-                                    inline for (func.params[1..], 0..) |param, i| {
-                                        comptime if (param.type.? == *DBusMessage) continue;
-                                        read_args_slice[i] = param.type.?;
-                                    }
-
-                                    const args = .{&self.iface_impl} ++ (msg.read(std.meta.Tuple(&read_args_slice), allocator) catch |err| switch (err) {
-                                        DBusMessage.DeserializationError.SignatureMismatch, DBusMessage.DeserializationError.MessageTooShort => {
-                                            const description = try std.fmt.allocPrint(allocator, "Invalid signature for method call '{s}': expected '{s}' but found '{s}'",
-                                                .{msg.member.?, dbus_types.guessSignature(std.meta.Tuple(&read_args_slice)), msg.signature.items}
-                                            );
-                                            defer self.allocator.free(description);
-                                            return conn.replyError(msg, "org.freedesktop.DBus.Error.UnknownMethod", description, allocator);
-                                        },
-                                        DBusMessage.DeserializationError.VariantUnexpectedSignature => {
-                                            const description = try std.fmt.allocPrint(allocator, "Variants inside method call for method '{s}' contain unexpected signature.",
-                                                .{msg.member.?}
-                                            );
-                                            defer self.allocator.free(description);
-                                            return conn.replyError(msg, "org.freedesktop.DBus.Error.UnknownMethod", description, allocator);
-                                        },
-                                        DBusMessage.DeserializationError.DepthLimitReached => @panic("Deserialization depth limit reached! This is likely application's fault, please report to application developer."),
-                                        DBusMessage.DeserializationError.OutOfMemory => return Error.OutOfMemory,
-                                    }) ++ (if (has_message_arg) .{msg} else .{});
-
-                                    const ret = @call(.auto, decl, args);
-                                    if ((msg.flags & DBusMessage.Flags.NO_REPLY_EXPECTED) != 0) return;
-
-                                    if (isReturnTypeErrorUnion(func.return_type.?)) {
-                                        const unwrapped = ret catch |err| {
-                                            const error_name = try std.fmt.allocPrint(allocator, "{s}.Error.{s}", .{self.interface, @errorName(err)});
-
-                                            const error_desc = if (std.meta.hasFn(InterfacePrototype, "errorDesc")) blk: {
-                                                const error_getter = @field(InterfacePrototype, "errorDesc");
-                                                if (@TypeOf(error_getter) != fn (anyerror) []const u8) @compileError("errorDesc must be fn (anyerror) []const u8 but currently is has type " ++ @typeName(@TypeOf(error_getter)));
-                                                break :blk error_getter(err);
-                                            } else "";
-                                            return try conn.replyError(msg, error_name, error_desc, allocator);
-                                        };
-                                        return try conn.replyToCall(msg, unwrapped, allocator);
-                                    } else return try conn.replyToCall(msg, ret, allocator);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            return Error.UnknownMethod;
-        }
-
-        /// For DBusProperties. TODO: Adequate documentation
-        pub fn property(erased_impl: *anyopaque, conn: *DBusConnection, msg: *DBusMessage, property_name: []const u8, action: DBusProperties.Action) DBusProperties.Error!void {
-            const self: *IFaceSelf = @alignCast(@ptrCast(erased_impl));
-            const typeinfo = @typeInfo(InterfacePrototype);
-            var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-            defer arena.deinit();
-
-            const allocator = arena.allocator();
-
-            switch (typeinfo) {
-                else => @compileError("Invalid container type"),
-                .@"struct" => |s| {
-
-                    inline for (s.decls) |decl_| {
-                        const decl = @field(InterfacePrototype, decl_.name);
-                        const decl_info = @typeInfo(@TypeOf(decl));
-
-                        comptime if (!DBusIntrospectable.isPropertyNameValid(decl_.name)) continue;
-
-                        switch (decl_info) {
-                            else => @compileError("Property candidate " ++ decl_.name ++ " expected to be a function, but is " ++ @typeName(decl_info)),
-                            .@"fn" => |func| {
-                                const return_type = unwrapReturnType(func.return_type.?);
-                                const error_set = unwrapErrorSet(func.return_type.?);
-                                const param1 = if (func.params.len == 2) unwrapOptional(func.params[1].type.?) else void;
-
-                                comptime if (func.params.len == 0) @compileError("Invalid property prototype for " ++ decl_.name ++ ": properties should take *" ++ @typeName(InterfacePrototype) ++ " as the first argument at least");
-                                comptime if (func.params[0].type.? != *InterfacePrototype) @compileError("Invalid property prototype for " ++ decl_.name ++ ": First argument should be *" ++ @typeName(InterfacePrototype));
-                                comptime if (func.params.len == 2) {
-                                    if (!dbus_types.isTypeSerializable(param1)) @compileError("Unserializable type " ++ @typeName(param1) ++ " for property " ++ decl_.name);
-                                };
-                                comptime if (!dbus_types.isTypeSerializable(return_type)) @compileError("Unserializable type " ++ @typeName(return_type) ++ " for property " ++ decl_.name);
-                                comptime if (func.params.len == 2 and return_type != void) {
-                                    if (return_type != param1) @compileError("Read-Write property " ++ decl_.name ++ " should have same type for params[1] and return_type, but " ++ @typeName(param1) ++ " and " ++ @typeName(return_type));
-                                };
-                                comptime if (func.params.len == 1 and return_type == void) @compileError("Property candidate " ++ decl_.name ++ " has no input or output");
-
-                                if (std.mem.eql(u8, DBusIntrospectable.propertyName(decl_.name), property_name)) {
-                                    switch (action) {
-                                        .Get => {
-                                            const ret = blk: {
-                                                if (error_set == error{}) {
-                                                    break :blk if (param1 == void) decl(&self.iface_impl)
-                                                    else decl(&self.iface_impl, null);
-                                                } else {
-                                                    break :blk if (param1 == void) try decl(&self.iface_impl)
-                                                    else try decl(&self.iface_impl, null);
-                                                }
-                                            };
-
-                                            const ValueUnion = union(enum) {
-                                                v: @TypeOf(ret)
-                                            };
-
-                                            return try conn.replyToCall(msg, ValueUnion{ .v = ret }, allocator);
-                                        },
-                                        .Set => {
-                                            if (param1 == void) return try conn.replyError(msg, "org.freedesktop.DBus.Properties.Error.ReadOnlyProperty", "Property " ++ decl_.name ++ " is read-only", allocator);
-
-                                            const value = try msg.read(param1, allocator);
-                                            _ = blk: {
-                                                if (error_set == error{}) {
-                                                    break :blk decl(&self.iface_impl, value);
-                                                } else {
-                                                    break :blk try decl(&self.iface_impl, value);
-                                                }
-                                            };
-
-                                            return try conn.replyToCall(msg, .{}, allocator);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            return DBusProperties.Error.NoSuchProperty;
-        }
-
-        /// For DBusProperties. TODO: Adequate documentation
-        pub fn all_properties(erased_impl: *anyopaque, conn: *DBusConnection, msg: *DBusMessage) DBusConnection.Error!void {
-
-            const self: *IFaceSelf = @alignCast(@ptrCast(erased_impl));
-            const typeinfo = @typeInfo(InterfacePrototype).@"struct";
-
-            var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-            defer arena.deinit();
-
-            const allocator = arena.allocator();
-
-            comptime var fields_count: usize = 0;
-            comptime for (typeinfo.decls) |decl| {
-                if (DBusIntrospectable.isPropertyNameValid(decl.name)) fields_count += 1;
-            };
-
-            comptime var enum_fields: [fields_count]Type.EnumField = undefined;
-            comptime var union_fields: [fields_count]Type.UnionField = undefined;
-
-            comptime var i: usize = 0;
-            inline for (typeinfo.decls) |decl| {
-                comptime if (!DBusIntrospectable.isPropertyNameValid(decl.name)) continue;
-                defer i += 1;
-                const func_decl = @field(InterfacePrototype, decl.name);
-                switch (@typeInfo(@TypeOf(func_decl))) {
-                    else => @compileError("Invalid type for prototype candidate " ++ decl.name ++ ": expected function, but got " ++ @typeName(func_decl)),
-                    .@"fn" => |func| {
-                        const return_type = unwrapReturnType(func.return_type.?);
-                        if (!dbus_types.isTypeSerializable(return_type)) @compileError("Return type of " ++ decl.name ++ " is not serializable");
-                        enum_fields[i] = Type.EnumField{
-                            .name = std.fmt.comptimePrint("type_{s}", .{DBusIntrospectable.propertyName(decl.name)}),
-                            .value = i
-                        };
-                        union_fields[i] = Type.UnionField{
-                            .name = std.fmt.comptimePrint("type_{s}", .{DBusIntrospectable.propertyName(decl.name)}),
-                            .type = return_type,
-                            .alignment = @alignOf(return_type),
-                        };
-                    }
-                }
-            }
-
-            const VariantEnum = @Type(.{
-                .@"enum" = Type.Enum{
-                    .tag_type = u32,
-                    .is_exhaustive = true,
-                    .decls = &.{},
-                    .fields = enum_fields[0..fields_count]
-                }
-            });
-            const VariantUnion = @Type(.{
-                .@"union" = Type.Union{
-                    .decls = &.{},
-                    .fields = union_fields[0..fields_count],
-                    .tag_type = VariantEnum,
-                    .layout = .auto
-                }
-            });
-
-            const PropertyHashmap = DBusDictionary.from(String, VariantUnion);
-            var properties = PropertyHashmap.init(allocator);
-
-            if (std.meta.fields(VariantUnion).len > 0) {
-                inline for (typeinfo.decls) |decl| {
-                    comptime if (!DBusIntrospectable.isPropertyNameValid(decl.name)) continue;
-                    const func_decl = @field(InterfacePrototype, decl.name);
-                    switch (@typeInfo(@TypeOf(func_decl))) {
-                        else => @compileError("Invalid type for prototype candidate " ++ decl.name ++ ": expected function, but got " ++ @typeName(func_decl)),
-                        .@"fn" => |func| {
-                            const return_type = unwrapReturnType(func.return_type.?);
-                            const error_set = unwrapErrorSet(func.return_type.?);
-                            const param1 = if (func.params.len == 2) unwrapOptional(func.params[1].type.?) else void;
-
-                            if (!dbus_types.isTypeSerializable(return_type)) @compileError("Return type of " ++ decl.name ++ " is not serializable");
-                            const ret = blk: {
-                                if (error_set == error{}) {
-                                    break :blk if (param1 == void) func_decl(&self.iface_impl)
-                                    else func_decl(&self.iface_impl, null);
-                                } else {
-                                    break :blk if (param1 == void) try func_decl(&self.iface_impl)
-                                    else try func_decl(&self.iface_impl, null);
-                                }
-                            };
-
-                            const v = @unionInit(VariantUnion, std.fmt.comptimePrint("type_{s}", .{DBusIntrospectable.propertyName(decl.name)}), ret);
-                            try properties.put(.{.value = DBusIntrospectable.propertyName(decl.name)}, v);
-                        }
-                    }
-                }
-            }
-            try conn.replyToCall(msg, .{properties}, allocator);
-        }
-    };
-    const iface_impl = try S.init(alloc, userdata, interface_name);
-    errdefer S.deinit(iface_impl);
-    return .{
-        .ptr = iface_impl,
-        .vtable = &.{
-            .route_call = S.route_call,
-            .property = S.property,
-            .all_properties = S.all_properties,
-            .deinit = S.deinit,
+                .destroy = destroy,
+            },
         },
-        .path = try alloc.dupe(u8, object_path),
-        .interface = try alloc.dupe(u8, interface_name),
-        .introspection = if (hidden) "" else comptime DBusIntrospectable.introspectInterface(InterfacePrototype),
-        .conn = connection,
-        .name = name,
-        .hidden = hidden,
+
+        pub fn emitSignal(impl: *@This(), signal_name: SignalNames, value: anyopaque, gpa: std.mem.Allocator) !void {
+
+            const v = switch (@typeInfo(@TypeOf(value))) {
+                .@"struct" => |st| if (!st.is_tuple) .{value} else value,
+                else => value,
+            };
+
+            var arena = std.heap.ArenaAllocator.init(gpa);
+            defer arena.deinit();
+
+            switch (signal_name) {
+                inline else => |sn| {
+                    if (!std.mem.eql(u8,types.guessSignature(v), types.getSignature(@field(Template, @tagName(sn).Signature)).?)) unreachable;
+                    var sig = try impl.interface.connection.?.startMessage();
+                    defer sig.deinit();
+
+                    sig.type = .signal;
+                    sig.setInterface(Template.interface_name)
+                       .setPath(impl.interface.object_path.?)
+                       .setMember(@tagName(sn))
+                       .setSignature(types.guessSignature(v));
+
+                    var w = sig.writer();
+                    try w.write(v);
+
+                    try impl.interface.connection.?.sendMessage(&sig);
+                    return;
+                }
+            }
+            unreachable;
+        }
+
+        fn method_call(iface: *Interface, message: *Message, allocator: mem.Allocator) Error!?Message {
+            const impl: *@This() = @fieldParentPtr("interface", iface);
+            inline for (methods) |method_name| {
+                if (!mem.eql(u8, method_name, message.fields.member.?)) comptime continue;
+
+                const Method = @field(Template, method_name);
+                
+                var reader = message.reader() catch return error.HandlingFailed;
+                const args = reader.read(Method.Arguments, allocator) catch return error.HandlingFailed;
+                const params = .{&impl.data} ++ args;
+
+                const rt_info = @typeInfo(Method.ReturnType);
+                const rval = ret: switch (rt_info) {
+                    .error_union => |eu| {
+                        const result = @call(.auto, Method.@"fn", params);
+                        const res_data: eu.payload = result catch |err| {
+                            var error_return = iface.connection.?.startMessage() catch return error.HandlingFailed;
+                            error_return.type = .@"error";
+                            error_return.fields = .{
+                                .destination = message.fields.sender,
+                                .reply_serial = message.serial,
+                                .error_name = std.fmt.allocPrint(allocator, "{s}.Error.{s}", .{ iface.name, @errorName(err) }) catch return error.HandlingFailed,
+                                .signature = "s"
+                            };
+                            const w = error_return.writer();
+                            w.write(types.String{.value = "ыыр кщще"}) catch unreachable;
+                            return error_return;
+                        };
+                        break :ret res_data;
+                    },
+                    else => @call(.auto, Method.@"fn", params),
+                };
+
+                if (message.flags.no_reply_expected) return null;
+                var response = iface.connection.?.startMessage() catch return error.HandlingFailed;
+                response.type = .method_response;
+                response.fields = .{
+                    .destination = message.fields.sender,
+                    .reply_serial = message.serial,
+                    .signature = types.getSignature(rval),
+                };
+                const w = response.writer();
+                w.write(rval) catch return error.HandlingFailed;
+                return response;
+            }
+
+            var unhandled = iface.connection.?.startMessage() catch return error.HandlingFailed;
+            unhandled.type = .@"error";
+            unhandled.fields = .{
+                .destination = message.fields.sender,
+                .reply_serial = message.serial,
+                .error_name = "org.freedesktop.DBus.Error.UnknownMethod",
+            };
+            return unhandled;
+        }
+
+        fn property_op(iface: *Interface, message: *Message, allocator: mem.Allocator) Error!?Message {
+            const impl: *@This() = @fieldParentPtr("interface", iface);
+
+            const Op = enum(u32) {
+                GetAll,
+                Get,
+                Set,
+                NoOp,
+            };
+
+            const op: Op =
+                if (mem.eql(u8, message.fields.member.?, "GetAll")) .GetAll
+                else if (mem.eql(u8, message.fields.member.?, "Get")) .Get
+                else if (mem.eql(u8, message.fields.member.?, "Set")) .Set
+                else .NoOp;
+
+            var reply = iface.connection.?.startMessage() catch return error.HandlingFailed;
+            reply.type = .method_response;
+            reply.fields = .{
+                .destination = message.fields.sender,
+                .reply_serial = message.serial
+            };
+
+            switch (op) {
+                .GetAll => {
+                    const ReplyDict = types.Dictionary(types.String, PropertiesUnion);
+
+                    var values = ReplyDict.init(allocator);
+                    inline for (properties) |property_name| {
+                        if (@field(Template, property_name).mode == .Write) comptime continue;
+                        values.put( .{ .value = property_name, .ownership = false }, 
+                        @unionInit(PropertiesUnion, property_name, @field(impl.properties, property_name)) ) catch return error.HandlingFailed;
+                    }
+
+                    const w = reply.writer();
+                    w.write(values) catch return error.HandlingFailed;
+                    return reply;
+                },
+                .Get, .Set => {
+                    const r = message.reader() catch unreachable;
+                    const req = r.read(types.String, allocator) catch return error.HandlingFailed;
+                    inline for (properties) |property_name| {
+                        if (!mem.eql(u8, req.value, property_name)) comptime continue;
+                        const mode = @field(Template, property_name).mode;
+                        if (op == .Set) {
+                            if (mode == .Read) {
+                                reply.type = .@"error";
+                                reply.fields.error_name = allocator.dupe(u8, "org.freedesktop.DBus.Properties.PropertyReadOnly") catch return error.HandlingFailed;
+                                reply.fields.signature = "s";
+                                const w = reply.writer();
+                                w.write(types.String{
+                                    .value = std.fmt.comptimePrint("Property named {s} is a read-only property.", .{property_name}),
+                                }) catch return error.HandlingFailed;
+                                return reply;
+                            }
+                            const value = (r.read(union (enum) {
+                                    v: @FieldType(PropertiesType, property_name),
+                                },
+                                allocator
+                            ) catch return error.HandlingFailed).v;
+                            @field(impl.properties, property_name) = value;
+                            return reply;
+                        } else {
+                            if (mode == .Write) {
+                                reply.type = .@"error";
+                                reply.fields.error_name = allocator.dupe(u8, "org.freedesktop.DBus.Properties.PropertyWriteOnly") catch return error.HandlingFailed;
+                                reply.fields.signature = "s";
+                                const w = reply.writer();
+                                w.write(types.String{
+                                    .value = std.fmt.comptimePrint("Property named {s} is a write-only property.", .{property_name}),
+                                }) catch return error.HandlingFailed;
+                                return reply;
+                            }
+
+                            const w = reply.writer();
+                            const ValueUnion = union(enum) {
+                                v: @FieldType(PropertiesType, property_name),
+                            };
+                            w.write(ValueUnion{.v = @field(impl.properties, property_name)}) catch return error.HandlingFailed;
+                            reply.fields.signature = "v";
+                            return reply;
+                        }
+                    }
+                    var unhandled = iface.connection.?.startMessage() catch return error.HandlingFailed;
+                    unhandled.type = .@"error";
+                    unhandled.fields = .{
+                        .destination = message.fields.sender,
+                        .reply_serial = message.serial,
+                        .error_name = "org.freedesktop.DBus.Error.UnknownProperty",
+                    };
+                    return unhandled;
+
+                },
+                else => {
+                    var unhandled = iface.connection.?.startMessage() catch return error.HandlingFailed;
+                    unhandled.type = .@"error";
+                    unhandled.fields = .{
+                        .destination = message.fields.sender,
+                        .reply_serial = message.serial,
+                        .error_name = "org.freedesktop.DBus.Error.UnknownMethod",
+                    };
+                    return unhandled;
+                },
+            }
+            unreachable;
+        }
+        
+        pub fn create(allocator: mem.Allocator) error{OutOfMemory}!*@This() {
+            const impl = try allocator.create(@This());
+            impl.* = @This(){};
+
+            // We pass interface pointer to init, so downstream implementation gets some pointer of known type.
+            // This is useful for some cases that piss me off (like for example org.freedesktop.DBus.Properties,
+            // that requires or hardcoding implementation into library, or some way to get connection's state)
+            if (std.meta.hasMethod(Template, "init")) try impl.data.init(&impl.interface, allocator);
+
+            return impl;
+        }
+
+        pub fn destroy(i: *Interface, allocator: mem.Allocator) void {
+            const impl: *@This() = @fieldParentPtr("interface", i);
+            // We might want to free some resources here (for example if we taken reference to interface, we release it here)
+            if (std.meta.hasMethod(Template, "deinit")) impl.data.deinit(allocator);
+            allocator.destroy(impl);
+        }
+
     };
+
+    return Impl;
 }
 
-/// Sets the introspection XML for this interface.
-pub inline fn setIntrospectable(self: *Self, xml: ?[]const u8) void {
-    self.introspectable = xml;
+pub fn methodCall(i: *Interface, message: *Message, allocator: mem.Allocator) Error!?Message {
+    return i.vtable.method_call(i, message, allocator);
 }
 
-/// Broadcasts a signal from this interface.
-pub fn broadcast(self: Self, path: []const u8, signal_name: []const u8, data: anytype, allocator: std.mem.Allocator) !void {
-    return self.conn.broadcast(.{
-        .interface = self.interface,
-        .member = signal_name,
-        .path = path,
-    }, data, allocator);
+pub fn reference(i: *Interface) *Interface {
+    _ = i.refcounter.fetchAdd(1, .seq_cst);
+    return i;
 }
 
-/// Unpublishes interface and releases any associated resources.
-pub fn destroy(self: Self) void {
-    if (self.name != null) self.name.?.unregisterInterface(self) else self.conn.unregisterInterface(self);
-    self.conn.allocator.free(self.interface);
-    self.conn.allocator.free(self.path);
-    self.vtable.deinit(self.ptr);
+pub fn release(i: *Interface) isize {
+    return i.refcounter.fetchSub(1, .seq_cst);
 }
 
-/// Methods should start with "method@", everything after @ should follow DBus member naming rules.
-
-inline fn isReturnTypeErrorUnion(comptime T: type) bool {
-const typeinfo = @typeInfo(T);
-    return switch (typeinfo) {
-        .error_union => true,
-        else => false,
-    };
+pub fn deinit(i: *Interface, allocator: mem.Allocator) void {
+    i.vtable.destroy(i, allocator);
 }
 
-inline fn unwrapReturnType(comptime T: type) type {
-    const typeinfo = @typeInfo(T);
-    switch (typeinfo) {
-        else => return T,
-        .error_union => |error_union| return error_union.payload
+fn PropertiesStorage(comptime T: type) struct {type, type} {
+    const properties = propertyList(T);
+
+    var struct_fields: []const BuiltinType.StructField    = &.{};
+    var type_enum_fields: []const BuiltinType.EnumField   = &.{};
+    var type_union_fields: []const BuiltinType.UnionField = &.{};
+
+    for (properties, 0..) |property_name, i| {
+        const Property = @field(T, property_name);
+        struct_fields = struct_fields ++ .{ BuiltinType.StructField{
+            .name = property_name,
+            .type = Property.Type,
+            .alignment = @alignOf(Property.Type),
+            .default_value_ptr = Property.default_value,
+            .is_comptime = false,
+        }};
+        type_enum_fields = type_enum_fields ++ .{ BuiltinType.EnumField{
+            .name = property_name,
+            .value = i,
+        }};
+        type_union_fields = type_union_fields ++ .{BuiltinType.UnionField{
+            .name = property_name,
+            .alignment = @alignOf(Property.Type),
+            .type = Property.Type,
+        }};
     }
-    unreachable;
+
+    const TypeEnum = @Type(.{
+        .@"enum" = .{
+            .decls = &.{},
+            .fields = type_enum_fields,
+            .is_exhaustive = false,
+            .tag_type = u32,
+        }
+    });
+    const TypeUnion = @Type(.{
+        .@"union" = .{
+            .decls = &.{},
+            .fields = type_union_fields,
+            .tag_type = TypeEnum,
+            .layout = .auto,
+        }
+    });
+
+    return .{@Type(.{
+        .@"struct" = .{
+            .decls = &.{},
+            .fields = struct_fields,
+            .layout = .auto,
+            .is_tuple = false,
+        }
+    }), TypeUnion};
 }
 
-inline fn unwrapErrorSet(comptime T: type) type {
-    const typeinfo = @typeInfo(T);
-    switch (typeinfo) {
-        else => return error{},
-        .error_union => |error_union| return error_union.error_set
-    }
-    unreachable;
+pub fn bind(i: *Interface, c: *Connection, path: []const u8) void {
+    i.connection = c;
+    i.object_path = path;
 }
 
-inline fn unwrapOptional(comptime T: type) type {
-    const typeinfo = @typeInfo(T);
-    switch (typeinfo) {
-        else => return T,
-        .optional => |optional| return optional.child
-    }
-    unreachable;
-}
+const methodList = types.methodList;
+const propertyList = types.propertyList;
+const signalList = types.signalList;
