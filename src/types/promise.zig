@@ -12,7 +12,7 @@ const Message = dbuz.types.Message;
 const isTypeSerializable = @import("dbus_types.zig").isTypeSerializable;
 
 const State = enum {
-Pending,
+    Pending,
     Completed,
     Invalid,
 };
@@ -22,6 +22,8 @@ pub const ErrorData = struct {
     error_code: error{Failed},
 };
 
+/// Create message response wrapper with expected return type T. Even if this type promises you to return T, it will return tuple of Promise(T).Value and *ArenaAllocator from .wait, to handle cases when error is arrived.
+/// If passed T is equals to Message, Value's response type will be actually *Message, because reasons. It is possible to setup callbacks on promise, if you don't want block some thread with .wait()
 pub fn Promise(comptime T: type) type {
     if (T != Message and !isTypeSerializable(T) and T != void) @compileError(std.fmt.comptimePrint("Unable to construct promise type from {s}: T must be Message or be DBus-serializable type", .{@typeName(T)}));
     return struct {
@@ -75,6 +77,7 @@ pub fn Promise(comptime T: type) type {
             timeout: ?*const fn (p: *Self, user_data: ?*anyopaque) void,
         };
 
+        /// Create Promise(T) using gpa as allocator or fail miserably.
         pub fn create(gpa: mem.Allocator) !*@This() {
             const promise = try gpa.create(@This());
             promise.* = .{
@@ -94,6 +97,7 @@ pub fn Promise(comptime T: type) type {
             return &p.reference().interface;
         }
 
+        /// Releases reference to underlying data. If returned value is 1, caller MUST then call .destroy();
         pub fn release(p: *@This()) isize {
             return p.refcounter.fetchSub(1, .seq_cst);
         }
@@ -102,6 +106,7 @@ pub fn Promise(comptime T: type) type {
             return @as(*@This(), @fieldParentPtr("interface", po)).release();
         }
 
+        /// Destroys promise, including underlying message.
         pub fn destroy(p: *@This()) void {
             p.mutex.lock();
             switch (p.state) {
@@ -122,6 +127,11 @@ pub fn Promise(comptime T: type) type {
             return @as(*@This(), @fieldParentPtr("interface", po)).destroy();
         }
 
+        /// Blocks calling thread until reply arrives for timeout_ns nanoseconds (orelse for 90 seconds).
+        /// On success, returns tuple of Promise(T).Value, *ArenaAllocator, else error. ArenaAllocator is allocator of T, if T requires allocation.
+        /// Callbacks are guaranteed to fire before this method exits.
+        /// 
+        /// NOTE: NEVER CALL THIS METHOD FROM INSIDE OF ANOTHER PROMISE'S CALLBACK. THIS WILL CAUSE DEADLOCK.
         pub fn wait(p: *@This(), timeout_ns: ?u64) !struct {Value, *std.heap.ArenaAllocator} {
             p.mutex.lock();
             defer p.mutex.unlock();
@@ -140,6 +150,7 @@ pub fn Promise(comptime T: type) type {
             unreachable;
         }
 
+        /// Takes ownership of message and arena.
         pub fn received(po: *PromiseOpaque, message: Message, arena: *std.heap.ArenaAllocator) void {
 
             const p: *@This() = @fieldParentPtr("interface", po);
@@ -217,6 +228,8 @@ pub fn Promise(comptime T: type) type {
             p.condition.broadcast();
         }
 
+        /// Sets timeout for this promise and returns timerfd that will produce event after timeout_ns. You must add that timerfd to
+        /// your event loop and then inform connection about timeout.
         pub fn setDeadline(p: *@This(), timeout_ns: u64) !posix.fd_t {
             const timerfd = try posix.timerfd_create(.REALTIME, .{ .NONBLOCK = true, .CLOEXEC = true });
             errdefer posix.close(timerfd);
@@ -229,6 +242,7 @@ pub fn Promise(comptime T: type) type {
             return timerfd;
         }
 
+        /// Sets up callbacks for promise.
         pub fn setupCallbacks(p: *@This(), cbs: PromiseCallbacks, user_data: ?*anyopaque) void {
             p.callbacks = cbs;
             p.capture = user_data;

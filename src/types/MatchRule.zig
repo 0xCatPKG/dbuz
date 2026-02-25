@@ -1,4 +1,5 @@
 
+/// Represents MatchRule that can be used to filter out DBus messages. In real usecase is prerequisite for receiving remote's signals
 const MatchRule = @This();
 
 const std = @import("std");
@@ -18,6 +19,7 @@ type: Message.Type = .signal,
 path: ?[]const u8 = null,
 path_namespace: ?[]const u8 = null,
 
+/// Build rule string from current MatchRule passable to AddMatch and RemoveMatch DBus calls. Caller owns memory.
 pub fn string(m: *const MatchRule, gpa: mem.Allocator) ![]const u8 {
     var aw = Io.Writer.Allocating.init(gpa);
     const w = &aw.writer;
@@ -36,6 +38,7 @@ pub fn string(m: *const MatchRule, gpa: mem.Allocator) ![]const u8 {
     return try aw.toOwnedSlice();
 }
 
+/// Checks if passed message matches the current rule.
 pub fn match(r: *const MatchRule, m: *const Message) bool {
     if (m.type != r.type) return false;
     if (r.member) |member| if (!mem.eql(u8, member, m.fields.member orelse return false)) return false;
@@ -60,6 +63,7 @@ pub fn match(r: *const MatchRule, m: *const Message) bool {
     return true;
 }
 
+/// Checks if current rule is subset of another rule. idk where it is useful, but anyways.
 pub fn isSubsetOf(r: *const MatchRule, other: MatchRule) bool {
     if (r.type != other.type) return false;
     if (other.member) |member| if (!mem.eql(u8, member, r.member orelse return false)) return false;

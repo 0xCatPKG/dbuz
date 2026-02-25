@@ -1,3 +1,7 @@
+
+/// Represents DBus Message.
+const Message = @This();
+
 const std = @import("std");
 const mem = std.mem;
 const Io = std.Io;
@@ -6,8 +10,7 @@ const posix = std.posix;
 const dbuz = @import("../dbuz.zig");
 const codec = dbuz.codec;
 
-const Message = @This();
-
+/// Message type according to DBus specifications 
 pub const Type = enum (u8) {
     invalid = 0,
     method_call = 1,
@@ -16,6 +19,7 @@ pub const Type = enum (u8) {
     signal = 4,
 };
 
+/// Messy mess used for serialization and deserialization.
 body: struct {
     fdlist: ?std.ArrayList(i32) = null,
     op: union(enum) { read: struct {
@@ -69,6 +73,7 @@ pub fn initWriting(allocator: mem.Allocator, endian: std.builtin.Endian, with_fd
     return m;
 }
 
+/// Acquire writer for message. Is a checked illegal behavior to request writer for message that is not opened for writing.
 pub fn writer(self: *Message) *codec.Writer {
     return switch (self.body.op) {
         .write => {
@@ -82,6 +87,8 @@ pub fn writer(self: *Message) *codec.Writer {
     };
 }
 
+/// Acquire reader for message. Is a checked illegal behavior to request reader for message that is not opened for reading.
+/// If message is not complete yet (we still in process of receiving chunks from DBus), it is an error to call this method and generally this should be impossible.
 pub fn reader(self: *Message) !*codec.Reader {
     return switch (self.body.op) {
         .read => {
@@ -95,6 +102,7 @@ pub fn reader(self: *Message) !*codec.Reader {
     };
 }
 
+/// Initialize message for reading. Message may be incomplete after this method, make sure to call isComplete before requesting reader from it.
 pub fn initReading(allocator: mem.Allocator, r: *Io.Reader, fds_source: ?*std.ArrayList(i32)) !Message {
     var sreader = codec.Reader.from(allocator, r, null, .little);
 
@@ -228,6 +236,7 @@ pub fn initReading(allocator: mem.Allocator, r: *Io.Reader, fds_source: ?*std.Ar
     return m;
 }
 
+/// Continue reading from *Io.Reader that was passed during initReading. Returns true if message is now complete.
 pub fn continueReading(self: *Message) !bool {
     return switch (self.body.op) {
         .read => {

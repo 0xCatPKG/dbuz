@@ -2,6 +2,7 @@ const std = @import("std");
 // const DBusIntrospectable = @import("../interfaces/DBusIntrospectable.zig");
 // const DBusMessage = @import("DBusMessage.zig");
 
+/// Wrapper for []const u8 for distinguishing between byte arrays and strings.
 pub const String = struct {
     value: []const u8,
     ownership: bool = false,
@@ -11,6 +12,8 @@ pub const String = struct {
         allocator.free(self.value);
     }
 };
+
+/// Wrapper for []const u8 for distinguishing between byte arrays and object paths.
 pub const ObjectPath = struct {
     value: []const u8,
     ownership: bool = false,
@@ -20,6 +23,8 @@ pub const ObjectPath = struct {
         allocator.free(self.value);
     }
 };
+
+/// Wrapper for []const u8 for distinguishing between byte arrays and signatures.
 pub const Signature = struct {
     value: []const u8,
     ownership: bool = false,
@@ -66,6 +71,7 @@ pub fn deinitValueRecursive(value: anytype, allocator: std.mem.Allocator) void {
     }
 }
 
+/// Check if type T can be serialized using dbuz.
 pub inline fn isTypeSerializable(comptime T: type) bool {
     const typeinfo = @typeInfo(T);
     return switch (typeinfo) {
@@ -95,163 +101,7 @@ pub inline fn isTypeSerializable(comptime T: type) bool {
     };
 }
 
-// pub inline fn introspectInterface(comptime Interface: type) []const u8 {
-//     comptime var data: []const u8 = "";
-//     const iface_info = @typeInfo(Interface).@"struct";
-//
-//     for (iface_info.decls) |decl_| {
-//         data = data ++ if (DBusIntrospectable.isMethodNameValid(decl_.name)) introspectMethodCall(Interface, decl_.name, @field(Interface, decl_.name))
-//         else if (DBusIntrospectable.isSignalNameValid(decl_.name)) introspectSignal(Interface, decl_.name, @field(Interface, decl_.name))
-//         else if (DBusIntrospectable.isPropertyNameValid(decl_.name)) introspectProperty(Interface, decl_.name, @field(Interface, decl_.name))
-//         else "";
-//     }
-//
-//     return data;
-// }
-//
-// inline fn introspectMethodCall(comptime Interface: type, comptime name: []const u8, func: anytype) []const u8 {
-//     const fntype = @TypeOf(func);
-//     const typeinfo = @typeInfo(fntype);
-//
-//     comptime var data: []const u8 = "";
-//
-//     switch (typeinfo) {
-//         else => {},
-//         .@"fn" => |fninfo| {
-//             comptime if (fninfo.params.len == 0) return "";
-//             comptime if (fninfo.params[0].type.? != *Interface) return "";
-//
-//             inline for (fninfo.params[1..]) |param| {
-//                 comptime if (!isTypeSerializable(param.type.?) and param.type.? != *DBusMessage) return "";
-//             }
-//
-//             data = data ++ "<method name=\"" ++ DBusIntrospectable.methodName(name) ++ "\">\n";
-//             for (fninfo.params[1..]) |param| {
-//                 if (param.type.? == *DBusMessage) continue;
-//                 data = data ++ "<arg name=\"arg_" ++ DBusMessage.guessSignature(param.type.?) ++ "\" type=\"" ++ DBusMessage.guessSignature(param.type.?) ++ "\" direction=\"in\"/>\n";
-//             }
-//             const retinfo = @typeInfo(fninfo.return_type.?);
-//
-//             switch (retinfo) {
-//                 else => {
-//                     switch (retinfo) {
-//                         else => {
-//                             if (!isTypeSerializable(fninfo.return_type.?)) return "";
-//                             data = data ++ "<arg name=\"out_" ++ DBusMessage.guessSignature(fninfo.return_type.?) ++ "\" type=\"" ++ DBusMessage.guessSignature(fninfo.return_type.?) ++ "\" direction=\"out\"/>\n";
-//                         },
-//                         .@"struct" => |structinfo| {
-//                             if (!isTypeSerializable(fninfo.return_type.?)) return "";
-//                             if (structinfo.is_tuple) {
-//                                 for (structinfo.fields) |field| {
-//                                     data = data ++ "<arg name=\"" ++ field.name ++ "\" type=\"" ++ DBusMessage.guessSignature(field.type.?) ++ "\" direction=\"out\"/>\n";
-//                                 }
-//                             }
-//                             else data = data ++ "<arg name=\"out_" ++ DBusMessage.guessSignature(fninfo.return_type.?) ++ "\" type=\"" ++ DBusMessage.guessSignature(fninfo.return_type.?) ++ "\" direction=\"out\"/>\n";
-//                         },
-//                         .void => {}
-//                     }
-//                 },
-//                 .error_union => |errorinfo| {
-//                     const payloadinfo = @typeInfo(errorinfo.payload);
-//                     switch (payloadinfo) {
-//                         else => {
-//                             if (!isTypeSerializable(errorinfo.payload)) return "";
-//                             data = data ++ "<arg name=\"out_" ++ DBusMessage.guessSignature(errorinfo.payload) ++ "\" type=\"" ++ DBusMessage.guessSignature(errorinfo.payload) ++ "\" direction=\"out\"/>\n";
-//                         },
-//                         .@"struct" => |structinfo| {
-//                             if (!isTypeSerializable(errorinfo.payload)) return "";
-//                             if (structinfo.is_tuple) {
-//                                 for (structinfo.fields) |field| {
-//                                     data = data ++ "<arg name=\"" ++ field.name ++ "\" type=\"" ++ DBusMessage.guessSignature(field.type.?) ++ "\" direction=\"out\"/>\n";
-//                                 }
-//                             }
-//                             else data = data ++ "<arg name=\"out_" ++ DBusMessage.guessSignature(errorinfo.payload) ++ "\" type=\"" ++ DBusMessage.guessSignature(errorinfo.payload) ++ "\" direction=\"out\"/>\n";
-//                         },
-//                         .void => {}
-//                     }
-//                 }
-//             }
-//
-//             data = data ++ "</method>\n";
-//         },
-//     }
-//     return data;
-// }
-//
-// inline fn introspectSignal(comptime _: type, comptime name: []const u8, func: anytype) []const u8 {
-//     if (!DBusIntrospectable.validMemberName(name[7..])) return "";
-//     const fntype = @TypeOf(func);
-//     const typeinfo = @typeInfo(fntype);
-//
-//     comptime var data: []const u8 = "";
-//
-//     switch (typeinfo) {
-//         else => {},
-//         .@"fn" => |fninfo| {
-//             inline for (fninfo.params[0..]) |param| {
-//                 comptime if (!isTypeSerializable(param.type.?)) return "";
-//             }
-//             data = data ++ "<signal name=\"" ++ DBusIntrospectable.signalName(name) ++ "\">\n";
-//             for (fninfo.params[0..]) |param| {
-//                 data = data ++ "<arg name=\"arg_" ++ DBusMessage.guessSignature(param.type.?) ++ "\" type=\"" ++ DBusMessage.guessSignature(param.type.?) ++ "\" direction=\"out\"/>\n";
-//             }
-//
-//             data = data ++ "</signal>\n";
-//         },
-//     }
-//     return data;
-// }
-//
-// inline fn introspectProperty(comptime Interface: type, comptime name: []const u8, func: anytype) []const u8 {
-//     const fntype = @TypeOf(func);
-//     const typeinfo = @typeInfo(fntype);
-//
-//     comptime var data: []const u8 = "";
-//
-//     switch (typeinfo) {
-//         else => {},
-//         .@"fn" => |fninfo| {
-//             comptime if (fninfo.params.len == 0) return "";
-//             comptime if (fninfo.params[0].type.? != *Interface) return "";
-//
-//             const readwrite = fninfo.params.len == 2;
-//
-//             data = data ++ "<property name=\"" ++ DBusIntrospectable.propertyName(name) ++ "\"";
-//             const retinfo = @typeInfo(fninfo.return_type.?);
-//
-//             switch (retinfo) {
-//                 else => {
-//                     if (readwrite) {
-//                         if (fninfo.return_type.? != DBusIntrospectable.unwrapOptional(fninfo.params[1].type.?)) return "";
-//                     }
-//                     switch (retinfo) {
-//                         else => {
-//                             if (!isTypeSerializable(fninfo.return_type.?)) return "";
-//                             data = data ++ " type=\"" ++ DBusMessage.guessSignature(fninfo.return_type.?) ++ "\"";
-//                         },
-//                         .void => {}
-//                     }
-//                 },
-//                 .error_union => |errorinfo| {
-//                     const payloadinfo = @typeInfo(errorinfo.payload);
-//                     if (readwrite) {
-//                         if (errorinfo.payload != fninfo.params[1].type.?) return "";
-//                     }
-//                     switch (payloadinfo) {
-//                         else => {
-//                             if (!isTypeSerializable(errorinfo.payload)) return "";
-//                             data = data ++ " type=\"" ++ DBusMessage.guessSignature(errorinfo.payload) ++ "\"";
-//                         },
-//                         .void => {}
-//                     }
-//                 }
-//             }
-//             data = data ++ " access=\"" ++ (if (readwrite) "readwrite" else "read") ++ "\"/>\n";
-//         },
-//     }
-//     return data;
-// }
-//
+/// Get signature from value of any type. If type is void, returns null
 pub fn getSignature(value: anytype) ?[]const u8 {
     comptime var signature: []const u8 = "";
 
@@ -274,6 +124,7 @@ pub fn getSignature(value: anytype) ?[]const u8 {
     return signature;
 }
 
+/// Guess DBus signature based on provided type
 pub inline fn guessSignature(T: type) [:0]const u8 {
     comptime var signature: [:0]const u8 = "";
     const typeinfo = @typeInfo(T);
@@ -346,12 +197,15 @@ const PropertyMode = enum {
     Write,
     ReadWrite,
 };
-
 const PropertyOpts = struct {
+    /// Access mode
     mode: PropertyMode = .ReadWrite,
     deprecated: bool = false,
 };
-pub fn Property(comptime T: type, default: ?*const T, opts: PropertyOpts) type {
+
+/// Generate property declaration for Interface.AutoInterface based on type T, with specified default value and specified options.
+/// Resulting property will reside in AutoInterface's type result, field .properties. with same name as declaration name.
+pub fn Property(comptime T: type, default: ?*const T, comptime opts: PropertyOpts) type {
     if (!isTypeSerializable(T)) @compileError(std.fmt.comptimePrint("Unable to make property type: {s} is not DBus-serializable", .{@typeName(T)}));
     return packed struct (u0) {
         pub const @".metadata_DBUZ_PROPERTY" = {};
@@ -363,11 +217,16 @@ pub fn Property(comptime T: type, default: ?*const T, opts: PropertyOpts) type {
 }
 
 const MethodOpts = struct {
+    /// Argument names that should be shown during introspection. Make sense only with Interface.AutoInterface(..., null). Must match count of function params (excluding impl pointer)
     argument_names: ?[]const []const u8 = null,
+    /// Same as with argument_names, but null means that guessSignature will be used on type. Used for annotation generation, not very useful currently.
     argument_types: ?[]const ?[]const u8 = null,
     deprecated: bool = false,
     no_reply_expected: bool = false,
 };
+
+/// Generate method declaration for Interface.AutoInterface based on passed function F and options.
+/// AutoInterface will generate glue code for calling passed function when message with .member set to declaration's name arrives.
 pub fn Method(F: anytype, comptime opts: MethodOpts) type {
     const Fn = @TypeOf(F);
     const fn_info = switch (@typeInfo(Fn)) {
@@ -416,6 +275,7 @@ const SignalOpts = struct {
     param_names: ?[]const []const u8 = null,
     param_types: ?[]const ?[]const u8 = null,
 };
+/// Generate signal declaration for Interface.AutoInterface's dbus intorspection and .emit_signal's glue code.
 pub fn Signal(comptime T: type, opts: SignalOpts) type {
     if (!isTypeSerializable(T)) @compileError(@typeName(T) ++ "is not DBus-serializable. Signal must have a serializable signature.");
     const SignalT = switch(@typeInfo(T)) {
@@ -442,6 +302,7 @@ pub fn Signal(comptime T: type, opts: SignalOpts) type {
     };
 }
 
+/// Generate type for signal handling. type will have methods .subscribe and .unsubscribe that can be used to attach any callback to remote signal.
 pub fn SignalProxy(comptime T: type) type {
     if (!isTypeSerializable(T)) @compileError(@typeName(T) ++ "is not DBus-serializable. Signal must have a serializable signature.");
     const SignalT = switch(@typeInfo(T)) {
@@ -495,6 +356,7 @@ pub fn SignalProxy(comptime T: type) type {
             };
         }
 
+        /// Subscribe receiver to that signal with userdata.
         pub fn subscribe(self: *Self, receiver: *const FnSignature, userdata: ?*anyopaque, subtype: SubType) !void {
             const key = if (userdata) |u| @intFromPtr(u) else @intFromPtr(receiver);
             try self.subscribers.putNoClobber(key, .{
@@ -504,6 +366,7 @@ pub fn SignalProxy(comptime T: type) type {
             });
         }
 
+        /// Unsubscribe receiver from that signal
         pub fn unsubscribe(self: *Self, receiver: *const FnSignature, userdata: ?*anyopaque) bool {
             const key = if (userdata) |u| @intFromPtr(u) else @intFromPtr(receiver);
             return self.subscribers.swapRemove(key);
