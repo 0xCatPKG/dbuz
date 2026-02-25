@@ -159,6 +159,14 @@ pub fn advance(self: *Connection, allocator: ?mem.Allocator) !?struct {Message, 
             const m = self.pending_message orelse unreachable;
             const a = self.pending_arena orelse unreachable;
             self.pending_message = null;
+            logger.debug("[Message:{}] Received message: {?s} -> {?s} ({?s}@{?s}.{?s}())", .{
+                m.serial,
+                m.fields.sender,
+                m.fields.destination,
+                m.fields.path,
+                m.fields.interface,
+                m.fields.member,
+            });
             return .{m, a};
         }
         _ = msg.continueReading() catch |err| {
@@ -269,6 +277,7 @@ fn handleProperties(c: *Connection, m: *Message, arena: mem.Allocator) !void {
 }
 
 fn handleIntrospection(c: *Connection, m: *Message, arena: mem.Allocator) !void {
+    logger.debug("[Message:{}] {?s} requested introspection for path {?s}", .{m.serial, m.fields.sender, m.fields.destination});
     const branch = if (
         !std.mem.eql(u8, m.fields.path.?, "/")
     ) c.object_tree.tree.get( try trie.runtimeKey(m.fields.path.?, arena) )
@@ -507,6 +516,14 @@ pub fn sendMessage(c: *Connection, m: *Message) !void {
     }
 
     try writer.flush();
+    logger.debug("[Message:{}] Sent message: {?s} -> {?s} ({?s}@{?s}.{?s}())", .{
+        m.serial,
+        m.fields.sender,
+        m.fields.destination,
+        m.fields.path,
+        m.fields.interface,
+        m.fields.member,
+    });
 }
 
 pub fn deinit(c: *Connection) void {

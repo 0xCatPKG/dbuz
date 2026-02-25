@@ -234,30 +234,6 @@ pub fn initReading(allocator: mem.Allocator, r: *Io.Reader, fds_source: ?*std.Ar
         if (err != error.EndOfStream) return m
         else return error.EndOfStream;
     };
-
-    logger.debug(\\Initialized new message for reading:
-                 \\    serial: {},
-                 \\    type:   {s},
-                 \\    sender: {?s},
-                 \\    dest:   {?s},
-                 \\    path:   {?s},
-                 \\    member: {?s},
-                 \\    iface:  {?s},
-                 \\    reply:  {?},
-                 \\ -------
-                 \\
-    , .{
-            m.serial,
-            @tagName(m.type),
-            m.fields.sender,
-            m.fields.destination,
-            m.fields.path,
-            m.fields.member,
-            m.fields.interface,
-            m.fields.reply_serial
-        }
-    );
-
     return m;
 }
 
@@ -304,28 +280,6 @@ pub fn isComplete(self: *const Message) bool {
 pub fn write(self: *Message, w: *Io.Writer, fw: ?*[]const i32) !void {
     return switch (self.body.op) {
         .write => {
-            logger.debug(\\Writing message to writer:
-                        \\    serial: {},
-                        \\    type:   {s},
-                        \\    sender: {?s},
-                        \\    dest:   {?s},
-                        \\    path:   {?s},
-                        \\    member: {?s},
-                        \\    iface:  {?s},
-                        \\    reply:  {?},
-                        \\ -------
-                        \\
-            , .{
-                    self.serial,
-                    @tagName(self.type),
-                    self.fields.sender,
-                    self.fields.destination,
-                    self.fields.path,
-                    self.fields.member,
-                    self.fields.interface,
-                    self.fields.reply_serial
-                }
-            );
             if (self.serial == 0) return error.InvalidSerial;
             const body = self.body.op.write.base.written();
 
