@@ -17,6 +17,7 @@ pub const interface_name = "org.freedesktop.DBus";
 
 pub fn Hello(i: *const DBus) !*Promise(String) {
     var request = try i.c.startMessage(null);
+    defer request.deinit();
     request.type = .method_call;
     request.fields = .{
         .destination = "org.freedesktop.DBus",
@@ -52,6 +53,7 @@ const RequestNameResponse = enum (u32) {
 };
 pub fn RequestName(i: *const DBus, name: []const u8, flags: RequestNameFlags) !*Promise(RequestNameResponse) {
     var request = try i.c.startMessage(null);
+    defer request.deinit();
     request.type = .method_call;
     request.fields = .{
         .destination = "org.freedesktop.DBus",
@@ -80,6 +82,7 @@ const ReleaseNameResponse = enum (u32) {
 };
 pub fn ReleaseName(i: *const DBus, name: []const u8) !*Promise(ReleaseNameResponse) {
     var request = try i.c.startMessage(null);
+    defer request.deinit();
     request.type = .method_call;
     request.fields = .{
         .destination = "org.freedesktop.DBus",
@@ -101,6 +104,7 @@ pub fn ReleaseName(i: *const DBus, name: []const u8) !*Promise(ReleaseNameRespon
 
 pub fn ListQueuedOwners(i: *const DBus, name: []const u8) !*Promise([]String) {
     var request = try i.c.startMessage(null);
+    defer request.deinit();
     request.type = .method_call;
     request.fields = .{
         .destination = "org.freedesktop.DBus",
@@ -122,6 +126,7 @@ pub fn ListQueuedOwners(i: *const DBus, name: []const u8) !*Promise([]String) {
 
 pub fn ListNames(i: *const DBus) !*Promise([]String) {
     var request = try i.c.startMessage(null);
+    defer request.deinit();
     request.type = .method_call;
     request.fields = .{
         .destination = "org.freedesktop.DBus",
@@ -139,6 +144,7 @@ pub fn ListNames(i: *const DBus) !*Promise([]String) {
 
 pub fn ListActivatableNames(i: *const DBus) !*Promise([]String) {
     var request = try i.c.startMessage(null);
+    defer request.deinit();
     request.type = .method_call;
     request.fields = .{
         .destination = "org.freedesktop.DBus",
@@ -156,6 +162,7 @@ pub fn ListActivatableNames(i: *const DBus) !*Promise([]String) {
 
 pub fn NameHasOwner(i: *const DBus, name: []const u8) !*Promise(bool) {
     var request = try i.c.startMessage(null);
+    defer request.deinit();
     request.type = .method_call;
     request.fields = .{
         .destination = "org.freedesktop.DBus",
@@ -185,6 +192,7 @@ const StartServiceByNameResponse = enum (u32) {
 };
 pub fn StartServiceByName(i: *const DBus, name: []const u8, flags: StartServiceByNameFlags) !*Promise(StartServiceByNameResponse) {
     var request = try i.c.startMessage(null);
+    defer request.deinit();
     request.type = .method_call;
     request.fields = .{
         .destination = "org.freedesktop.DBus",
@@ -209,6 +217,7 @@ pub fn StartServiceByName(i: *const DBus, name: []const u8, flags: StartServiceB
 const EnvironmentDict = dbuz.types.Dict(String, String);
 pub fn UpdateActivationEnvironment(i: *const DBus, environment: EnvironmentDict) !*Promise(void) {
     var request = try i.c.startMessage(null);
+    defer request.deinit();
     request.type = .method_call;
     request.fields = .{
         .destination = "org.freedesktop.DBus",
@@ -231,6 +240,7 @@ pub fn UpdateActivationEnvironment(i: *const DBus, environment: EnvironmentDict)
 
 pub fn GetNameOwner(i: *const DBus, name: []const u8) !*Promise(String) {
     var request = try i.c.startMessage(null);
+    defer request.deinit();
     request.type = .method_call;
     request.fields = .{
         .destination = "org.freedesktop.DBus",
@@ -253,6 +263,7 @@ pub fn GetNameOwner(i: *const DBus, name: []const u8) !*Promise(String) {
 
 pub fn GetConnectionUnixUser(i: *const DBus, name: []const u8) !*Promise(u32) {
     var request = try i.c.startMessage(null);
+    defer request.deinit();
     request.type = .method_call;
     request.fields = .{
         .destination = "org.freedesktop.DBus",
@@ -275,6 +286,7 @@ pub fn GetConnectionUnixUser(i: *const DBus, name: []const u8) !*Promise(u32) {
 
 pub fn GetConnectionUnixProcessID(i: *const DBus, name: []const u8) !*Promise(u32) {
     var request = try i.c.startMessage(null);
+    defer request.deinit();
     request.type = .method_call;
     request.fields = .{
         .destination = "org.freedesktop.DBus",
@@ -305,6 +317,7 @@ const CredentialsValue = union (enum) {
 const Credentials = dbuz.types.Dict(String, CredentialsValue);
 pub fn GetConnectionCredentials(i: *const DBus, name: []const u8) !*Promise(Credentials) {
     var request = try i.c.startMessage(null);
+    defer request.deinit();
     request.type = .method_call;
     request.fields = .{
         .destination = "org.freedesktop.DBus",
@@ -327,6 +340,7 @@ pub fn GetConnectionCredentials(i: *const DBus, name: []const u8) !*Promise(Cred
 
 pub fn AddMatch(i: *const DBus, rule: []const u8) !*Promise(void) {
     var request = try i.c.startMessage(null);
+    defer request.deinit();
     request.type = .method_call;
     request.fields = .{
         .destination = "org.freedesktop.DBus",
@@ -349,6 +363,7 @@ pub fn AddMatch(i: *const DBus, rule: []const u8) !*Promise(void) {
 
 pub fn RemoveMatch(i: *const DBus, rule: []const u8) !*Promise(void) {
     var request = try i.c.startMessage(null);
+    defer request.deinit();
     request.type = .method_call;
     request.fields = .{
         .destination = "org.freedesktop.DBus",
@@ -371,6 +386,7 @@ pub fn RemoveMatch(i: *const DBus, rule: []const u8) !*Promise(void) {
 
 pub fn GetId(i: *const DBus) !*Promise(String) {
     var request = try i.c.startMessage(null);
+    defer request.deinit();
     request.type = .method_call;
     request.fields = .{
         .destination = "org.freedesktop.DBus",
