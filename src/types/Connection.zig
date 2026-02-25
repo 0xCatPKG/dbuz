@@ -607,7 +607,6 @@ pub fn deinit(c: *Connection) void {
                 if (promise.vtable.release(promise) == 1) promise.vtable.destroy(promise);
             }
         }
-        c.object_tree.tree.deinit(c.default_allocator);
         {
             for (c.listeners.list.items) |listener_managed| {
                 if (listener_managed.interface.release() == 1) listener_managed.interface.deinit(listener_managed.allocator);
