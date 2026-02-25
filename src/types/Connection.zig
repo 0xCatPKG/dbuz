@@ -624,6 +624,9 @@ pub fn deinit(c: *Connection) void {
         c.dbus.deinit();
     }
     posix.close(c.handle);
+    c.listeners.list.deinit(c.default_allocator);
+    c.object_tree.tree.deinit(c.default_allocator);
+    c.tracker.deinit(c.default_allocator);
     c.default_allocator.destroy(c);
 }
 
