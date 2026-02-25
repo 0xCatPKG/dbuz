@@ -8,6 +8,8 @@ const net = std.net;
 const posix = std.posix;
 const atomic = std.atomic;
 
+const logger = std.log.scoped(.Connection);
+
 const Thread = std.Thread;
 
 const dbuz = @import("../dbuz.zig");
@@ -79,6 +81,8 @@ unique_name: ?[]const u8 = null,
 /// Create new instance of connection, allocating new Connection on heap using passed allocator.
 /// Takes ownership of passed handle. If function returns an error, handle is guaranteed to be valid.
 pub fn init(allocator: mem.Allocator, handle: posix.fd_t) !*Connection {
+    errdefer |err| logger.debug("Connection creation for fd:{} failed: {s}", .{handle, @errorName(err)});
+
     var reader = try transport.Reader.init(allocator, handle, default_buffer_size);
     errdefer reader.deinit();
     
@@ -101,6 +105,7 @@ pub fn init(allocator: mem.Allocator, handle: posix.fd_t) !*Connection {
         .pending_message = null,
         .pending_arena = null,
     };
+    logger.debug("Created {*} for fd:{}", .{c, handle});
     return c;
 }
 
@@ -113,10 +118,9 @@ pub fn exportFileDescriptor(self: *const Connection) i32 {
 /// ArenaAllocator is initialized by passed allocator (or default one if null is passed). All Message's internal allocations are made using returned ArenaAllocator.
 /// Caller owns returned memory. Caller MUST call Message.deinit() when all operations on message is ended, as ArenaAllocator.deinit() not closes associated file descriptors.
 pub fn advance(self: *Connection, allocator: ?mem.Allocator) !?struct {Message, *std.heap.ArenaAllocator} {
+    logger.debug("Advancing connection...");
     const r = &self.reader.interface;
-
     const alloc = if (allocator) |a| a else self.default_allocator;
-
     const msg: *Message = if (self.pending_message) |*pm| @constCast(pm) else blk: {
         const arena = try alloc.create(std.heap.ArenaAllocator);
         arena.* = .init(alloc);
@@ -182,9 +186,14 @@ fn helloReplied(_: *Promise(dbuz.types.String), name: dbuz.types.String, _: *std
         .path = "/org/freedesktop/DBus",
     }, c.default_allocator) catch {};
     c.unique_name = c.default_allocator.dupe(u8, name.value) catch null;
+    logger.debug("Hello received: unique name is {s}", .{name.value});
 }
 
-fn helloFailed(_: *Promise(dbuz.types.String), _: PromiseError, _: ?*anyopaque) void { }
+fn helloFailed(_: *Promise(dbuz.types.String), err: PromiseError, _: ?*anyopaque) void {
+    logger.debug("Hello failed: {s}", .{
+        err.message orelse @errorName(err.error_code)
+    });
+}
 
 /// Sends org.freedesktop.DBus.Hello on message bus in asyncronous manner.
 /// Must be first sent message after bus authentication.

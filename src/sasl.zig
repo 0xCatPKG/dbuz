@@ -6,6 +6,8 @@ const net = std.net;
 
 const transport = @import("transport.zig");
 
+const logger = std.log.scoped(.auth);
+
 pub const AuthClient = struct {
     mechanism: enum {
         External,
@@ -32,6 +34,8 @@ pub const AuthClient = struct {
         };
         defer client.reader.deinit();
 
+        logger.debug("Authenticating DBus connection at fd {}", .{stream.handle});
+
         var writer = stream.writer(&.{});
         const w = &writer.interface;
 
@@ -41,6 +45,8 @@ pub const AuthClient = struct {
             "NEGOTIATE_UNIX_FD\r\n",
         };
 
+        logger.debug("Trying AUTH MECHANISM EXTERNAL, with UNIX_FD cap", .{});
+
         _ = try w.writeVec(vec);
         const r = &client.reader.interface;
         
@@ -49,25 +55,33 @@ pub const AuthClient = struct {
             if (line[line.len - 1] != '\r') return error.InvalidResponse;
             switch (client.state) {
                 .MechanismSelection => {
-                    if (mem.startsWith(u8, line, "REJECTED")) return error.AuthMechanismNotSupported
+                    if (mem.startsWith(u8, line, "REJECTED")) {
+                        logger.debug("[fd:{}] AUTH MECHANISM EXTERNAL is not supported", .{client.handle});
+                        return error.AuthMechanismNotSupported;
+                    }
                     else if (mem.startsWith(u8, line, "DATA")) {
                         client.state = .DataResponse;
                     } else {
+                        logger.debug("[fd:{}] Mechanism selection phase failed.", .{client.handle});
                         return error.InvalidResponse;
                     }
                 },
                 .DataResponse => {
                     if (mem.startsWith(u8, line, "OK")) {
+                        logger.debug("[fd:{}] Authenticated successfully!", .{client.handle});
                         client.state = .UnixFDResponse;
                     } else {
+                        logger.debug("[fd:{}] Data response phase failed.", .{client.handle});
                         return error.InvalidResponse;
                     }
                 },
                 .UnixFDResponse => {
                     if (mem.startsWith(u8, line, "AGREE_UNIX_FD")) {
+                        logger.debug("[fd:{}] Negotiated Unix FDs passthrough support.", .{client.handle});
                         _ = try w.write("BEGIN\r\n");
                         return;
                     } else {
+                        logger.debug("[fd:{}] Unix FDs passthrough support negotiation failed.", .{client.handle});
                         return error.UnixFDNotSupported;
                     }
                 }

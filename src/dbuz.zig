@@ -30,6 +30,8 @@ pub const transport = @import("transport.zig");
 const std = @import("std");
 const Thread = std.Thread;
 
+const logger = std.log.scoped(.dbuz);
+
 /// Spawns looper thread that automatically handles incoming messages. Not recommended for production purposes.
 /// If you want dispatch message, implement your own looper based on Connection.exportFileDescriptor, Connection.advance and Connection.handleMessage.
 pub fn spawnLooperThread(gpa: std.mem.Allocator, c: *types.Connection, exit_condition: *bool) !Thread {
@@ -37,12 +39,14 @@ pub fn spawnLooperThread(gpa: std.mem.Allocator, c: *types.Connection, exit_cond
 }
 
 fn looper(gpa: std.mem.Allocator, c: *types.Connection, exit_condition: *bool) void {
+    logger.debug("Looper started", .{});
     while (!exit_condition.*) {
-        const m_a = c.advance(gpa) catch continue;
+        const m_a = c.advance(gpa) catch |err| return logger.debug("Looper: unable to advance connection: {s}", .{@errorName(err)});
         if (m_a) |ma| {
-            c.handleMessage(ma) catch continue;
+            c.handleMessage(ma) catch |err| return logger.debug("Looper: unable to handle message: {s}", .{@errorName(err)});
         }
     }
+    logger.debug("Looper ended", .{});
 }
 
 
@@ -143,12 +147,18 @@ pub fn connect(gpa: std.mem.Allocator, bus: BusType) !*types.Connection {
 
     var addr_it = std.mem.splitScalar(u8, address, ';');
     while (addr_it.next()) |addr| {
+        logger.debug("Trying to connect to DBus by address: \"{s}\"", .{addr});
         const bus_addr = try Bus.parse(gpa, addr);
         const stream = switch (bus_addr.sockaddr.any.family) {
             std.posix.AF.UNIX => blk: {
+                logger.debug("Connecting through unix socket...", .{});
                 const sockfd = try std.posix.socket(std.posix.AF.UNIX, std.posix.SOCK.STREAM | std.posix.SOCK.CLOEXEC, 0);
                 errdefer std.posix.close(sockfd);
-                std.posix.connect(sockfd, &bus_addr.sockaddr.any, bus_addr.sockaddr.getOsSockLen()) catch continue;
+                std.posix.connect(sockfd, &bus_addr.sockaddr.any, bus_addr.sockaddr.getOsSockLen()) catch |err| {
+                    logger.debug("Unable to connect to address \"{s}\": {s}", .{addr, @errorName(err)});
+                    continue;
+                };
+                logger.debug("Connected to DBus using address \"{s}\"", .{addr});
                 break :blk std.net.Stream{ .handle = sockfd };
             },
             else => continue,

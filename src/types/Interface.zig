@@ -113,7 +113,7 @@ pub fn AutoInterface(comptime T: type, comptime desc: ?*const []const u8) type {
             switch (signal_name) {
                 inline else => |sn| {
                     if (!std.mem.eql(u8,types.guessSignature(v), types.getSignature(@field(Template, @tagName(sn).Signature)).?)) unreachable;
-                    var sig = try impl.interface.connection.?.startMessage();
+                    var sig = try impl.interface.connection.?.startMessage(arena.allocator());
                     defer sig.deinit();
 
                     sig.type = .signal;
@@ -148,7 +148,7 @@ pub fn AutoInterface(comptime T: type, comptime desc: ?*const []const u8) type {
                     .error_union => |eu| {
                         const result = @call(.auto, Method.@"fn", params);
                         const res_data: eu.payload = result catch |err| {
-                            var error_return = iface.connection.?.startMessage() catch return error.HandlingFailed;
+                            var error_return = iface.connection.?.startMessage(allocator) catch return error.HandlingFailed;
                             error_return.type = .@"error";
                             error_return.fields = .{
                                 .destination = message.fields.sender,
@@ -163,7 +163,7 @@ pub fn AutoInterface(comptime T: type, comptime desc: ?*const []const u8) type {
                 };
 
                 if (message.flags.no_reply_expected) return null;
-                var response = iface.connection.?.startMessage() catch return error.HandlingFailed;
+                var response = iface.connection.?.startMessage(allocator) catch return error.HandlingFailed;
                 response.type = .method_response;
                 response.fields = .{
                     .destination = message.fields.sender,
@@ -175,7 +175,7 @@ pub fn AutoInterface(comptime T: type, comptime desc: ?*const []const u8) type {
                 return response;
             }
 
-            var unhandled = iface.connection.?.startMessage() catch return error.HandlingFailed;
+            var unhandled = iface.connection.?.startMessage(allocator) catch return error.HandlingFailed;
             unhandled.type = .@"error";
             unhandled.fields = .{
                 .destination = message.fields.sender,
@@ -201,7 +201,7 @@ pub fn AutoInterface(comptime T: type, comptime desc: ?*const []const u8) type {
                 else if (mem.eql(u8, message.fields.member.?, "Set")) .Set
                 else .NoOp;
 
-            var reply = iface.connection.?.startMessage() catch return error.HandlingFailed;
+            var reply = iface.connection.?.startMessage(allocator) catch return error.HandlingFailed;
             reply.type = .method_response;
             reply.fields = .{
                 .destination = message.fields.sender,
@@ -268,7 +268,7 @@ pub fn AutoInterface(comptime T: type, comptime desc: ?*const []const u8) type {
                             return reply;
                         }
                     }
-                    var unhandled = iface.connection.?.startMessage() catch return error.HandlingFailed;
+                    var unhandled = iface.connection.?.startMessage(allocator) catch return error.HandlingFailed;
                     unhandled.type = .@"error";
                     unhandled.fields = .{
                         .destination = message.fields.sender,
@@ -279,7 +279,7 @@ pub fn AutoInterface(comptime T: type, comptime desc: ?*const []const u8) type {
 
                 },
                 else => {
-                    var unhandled = iface.connection.?.startMessage() catch return error.HandlingFailed;
+                    var unhandled = iface.connection.?.startMessage(allocator) catch return error.HandlingFailed;
                     unhandled.type = .@"error";
                     unhandled.fields = .{
                         .destination = message.fields.sender,
