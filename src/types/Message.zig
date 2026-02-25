@@ -312,6 +312,7 @@ pub fn write(self: *Message, w: *Io.Writer, fw: ?*[]const i32) !void {
             const HeadersDict = std.AutoArrayHashMap(u8, HeaderType);
 
             var headers = HeadersDict.init(self.allocator);
+            defer headers.deinit();
 
             if (self.fields.path) |path| {
                 try headers.put(1, .{ .object_path = .{ .value = path } });

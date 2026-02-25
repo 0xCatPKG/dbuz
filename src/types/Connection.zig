@@ -488,14 +488,14 @@ fn listenerAddError(_: *Promise(void), cause: PromiseError, userdata: ?*anyopaqu
 /// Doesn't guarantee that listener will be added
 /// unique_id is unique id of listener that can be used for listener unregistering.
 pub fn registerListenerAsync(c: *Connection, impl: anytype, rule: MatchRule, unique_id: *usize, allocator: mem.Allocator) !*Promise(void) {
+    c.listeners.mutex.lock();
+    defer c.listeners.mutex.unlock();
+
     _ = impl.interface.reference();
     errdefer if (impl.interface.release() == 1) impl.interface.deinit(allocator);
 
     const key = try rule.string(allocator);
     defer allocator.free(key);
-
-    c.listeners.mutex.lock();
-    defer c.listeners.mutex.unlock();
 
     const listener = try c.listeners.list.addOne(c.default_allocator);
     listener.* = .{
