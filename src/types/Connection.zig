@@ -118,7 +118,7 @@ pub fn exportFileDescriptor(self: *const Connection) i32 {
 /// ArenaAllocator is initialized by passed allocator (or default one if null is passed). All Message's internal allocations are made using returned ArenaAllocator.
 /// Caller owns returned memory. Caller MUST call Message.deinit() when all operations on message is ended, as ArenaAllocator.deinit() not closes associated file descriptors.
 pub fn advance(self: *Connection, allocator: ?mem.Allocator) !?struct {Message, *std.heap.ArenaAllocator} {
-    logger.debug("Advancing connection...");
+    logger.debug("Advancing connection...", .{});
     const r = &self.reader.interface;
     const alloc = if (allocator) |a| a else self.default_allocator;
     const msg: *Message = if (self.pending_message) |*pm| @constCast(pm) else blk: {
