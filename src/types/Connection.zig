@@ -35,6 +35,7 @@ const ListenerManaged = struct {
     rule: MatchRule,
     allocator: mem.Allocator,
     c: *Connection,
+    unique_id: usize,
 };
 
 /// Default allocator to be used if another not passed to function.
@@ -54,6 +55,7 @@ pidfd_queue: std.ArrayList(i32) = .{},
 enable_fds: bool = true,
 
 next_serial: atomic.Value(u32) = .init(1),
+next_listener_id: atomic.Value(usize) = .init(1),
 
 pending_message: ?Message = null,
 pending_arena: ?*std.heap.ArenaAllocator = null,
@@ -189,10 +191,13 @@ pub fn startMessage(self: *Connection, gpa: ?std.mem.Allocator) !Message {
 
 fn helloReplied(_: *Promise(dbuz.types.String), name: dbuz.types.String, _: *std.heap.ArenaAllocator, userdata: ?*anyopaque) void {
     const c: *Connection = @alignCast(@ptrCast(userdata));
-    c.registerListener(&c.dbus, .{
+    var unique_id: usize = undefined;
+    const promise = c.registerListenerAsync(&c.dbus, .{
         .interface = "org.freedesktop.DBus",
         .path = "/org/freedesktop/DBus",
-    }, c.default_allocator) catch {};
+    }, &unique_id, c.default_allocator) catch unreachable;
+    if (promise.release() == 1) promise.destroy();
+
     c.unique_name = c.default_allocator.dupe(u8, name.value) catch null;
     logger.debug("Hello received: unique name is {s}", .{name.value});
 }
@@ -459,46 +464,98 @@ pub fn unregisterInterface(c: *Connection, impl: anytype, comptime path: []const
 }
 
 fn listenerAdded(_: *Promise(void), _: void, _: *std.heap.ArenaAllocator, userdata: ?*anyopaque) void {
-    const managed_ptr: *ListenerManaged = @alignCast(@ptrCast(userdata));
-    const managed = managed_ptr.*;
-    managed.allocator.destroy(managed_ptr);
-    managed.c.listeners.mutex.lock();
-    defer managed.c.listeners.mutex.unlock();
-
-    managed.c.listeners.list.append(managed.c.default_allocator, managed) catch {
-        if (managed.interface.release() == 1) managed.interface.deinit(managed.allocator);
-    };
+    const listener: *ListenerManaged = @alignCast(@ptrCast(userdata));
+    logger.debug("[Listener:{}] Successfully registered on DBus", .{listener.unique_id});
 }
-fn listenerAddError(_: *Promise(void), _: PromiseError, userdata: ?*anyopaque) void {
-    const managed_ptr: *ListenerManaged = @alignCast(@ptrCast(userdata));
-    if (managed_ptr.interface.release() == 1) managed_ptr.interface.deinit(managed_ptr.allocator);
-    managed_ptr.allocator.destroy(managed_ptr);
+
+fn listenerAddError(_: *Promise(void), cause: PromiseError, userdata: ?*anyopaque) void {
+    const listener: *ListenerManaged = @alignCast(@ptrCast(userdata));
+    logger.err("[Listener:{}] Unable to register on DBus: {s}", .{listener.unique_id, cause.message orelse @errorName(cause.error_code)});
+
+    listener.c.listeners.mutex.lock();
+    defer listener.c.listeners.mutex.unlock();
+
+    for (listener.c.listeners.list.items, 0..) |data, i| {
+        if (data.unique_id != listener.unique_id) continue;
+        if (data.interface.release() == 1) data.interface.deinit(data.allocator);
+        _ = listener.c.listeners.list.swapRemove(i);
+        return;
+    }
 }
 
 /// Requests listener to be added.
-pub fn registerListener(c: *Connection, impl: anytype, rule: MatchRule, allocator: mem.Allocator) !void {
+/// Doesn't guarantee that listener will be added
+/// unique_id is unique id of listener that can be used for listener unregistering.
+pub fn registerListenerAsync(c: *Connection, impl: anytype, rule: MatchRule, unique_id: *usize, allocator: mem.Allocator) !*Promise(void) {
     _ = impl.interface.reference();
     errdefer if (impl.interface.release() == 1) impl.interface.deinit(allocator);
 
     const key = try rule.string(allocator);
     defer allocator.free(key);
 
-    const managed = try allocator.create(ListenerManaged);
-    managed.* = .{
-        .allocator = allocator,
+    c.listeners.mutex.lock();
+    defer c.listeners.mutex.unlock();
+
+    const listener = try c.listeners.list.addOne(c.default_allocator);
+    listener.* = .{
         .interface = &impl.interface,
+        .allocator = allocator,
         .rule = rule,
         .c = c,
+        .unique_id = c.next_listener_id.fetchAdd(1, .monotonic),
     };
+
+    unique_id.* = listener.unique_id;
+
+    logger.debug("Registering a new listener of type {s} with unqiue_id {}, match string \"{s}\"", .{ @typeName(@TypeOf(impl)), listener.unique_id, key });
 
     const promise = try c.dbus.AddMatch(key);
     promise.setupCallbacks(.{
         .timeout = null,
         .response = &listenerAdded,
         .@"error" = &listenerAddError,
-    }, managed);
+    }, listener);
 
-    if (promise.release() == 1) promise.destroy();
+    return promise;
+}
+
+/// Look ar registerListenerAsync for details. Returns unique_id of listener.
+pub fn registerListener(c: *Connection, impl: anytype, rule: MatchRule, allocator: mem.Allocator) !usize {
+    var unique_id: usize = undefined;
+
+    const promise = try c.registerListenerAsync(impl, rule, &unique_id, allocator);
+    defer if (promise.release() == 1) promise.destroy();
+
+    const value, _ = try promise.wait(null);
+    switch (value) {
+        .response => return unique_id,
+        .@"error" => |err| return err.error_code,
+    }
+}
+
+pub fn unregisterListener(c: *Connection, unique_id: usize) void {
+    c.listeners.mutex.lock();
+    defer c.listeners.mutex.unlock();
+
+    for (c.listeners.list.items, 0..) |listener, i| {
+        if (listener.unique_id != unique_id) continue;
+        if (listener.interface.release() == 1) listener.interface.deinit(listener.allocator);
+        _ = c.listeners.list.swapRemove(i);
+
+        const rule_str = listener.rule.string(c.default_allocator) catch null;
+        defer c.default_allocator.free(rule_str);
+
+        if (rule_str) |rule| {
+            const promise = c.dbus.RemoveMatch(rule) catch null;
+            if (promise) |p| {
+                if (p.release() == 1) p.deinit();
+            }
+        }
+
+        logger.debug("[Listener:{}] Unregistered a listener with rule {?s}", .{ listener.unique_id, rule_str });
+        break;
+    }
+    logger.warn("Unable to find listener with unique_id {}", .{unique_id});
 }
 
 /// Sends passed message down the handle.
