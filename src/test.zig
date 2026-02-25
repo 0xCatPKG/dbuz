@@ -1,92 +1,134 @@
 const std = @import("std");
 const testing = std.testing;
-const builtin = @import("builtin");
+const net = std.net;
+
 const dbuz = @import("dbuz.zig");
+const transport = dbuz.transport;
+const sasl = dbuz.auth;
+const Message = dbuz.types.Message;
+const Connection = dbuz.types.Connection;
+const Interface = dbuz.types.Interface;
 
-fn waitOnFD(fd: std.posix.fd_t, timeout_ms: i32) !void {
-    var poll_fds = [_]std.posix.pollfd{.{
-        .fd = fd,
-        .events = std.posix.POLL.IN | std.posix.POLL.HUP,
-        .revents = 0,
-    }};
-    const evcnt = try std.posix.poll(&poll_fds, timeout_ms);
-    if (evcnt == 0) return error.Timeout;
-    if (poll_fds[0].revents & std.posix.POLL.HUP != 0) return error.Hangup;
-    if (poll_fds[0].revents & std.posix.POLL.IN != 0) return;
-    unreachable;
+fn name_owner_changed(name: dbuz.types.String, old_owner: dbuz.types.String, new_owner: dbuz.types.String, _: ?*anyopaque) void {
+    std.debug.print("Name owner of \"{s}\" changed: {s} -> {s}\n", .{name.value, old_owner.value, new_owner.value});
 }
 
-test "dbuz_singlethreaded_session_connect" {
-    const conn = dbuz.connect(testing.allocator, .{ .bus = .Session, .enable_introspection = false, .config = .{} }) catch |err| switch (err) {
-        error.ConnectionLost => return err,
-        else => return error.SkipZigTest,
-    };
+test "DBus Hello" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+
+    const conn = try dbuz.connect(allocator, .Session);
     defer conn.deinit();
 
-    try waitOnFD(conn.getFd(), std.time.ms_per_s);
-    try conn.update(false);
-    try testing.expect(conn.unique_name != null);
+    var cond: bool = false;
+    const looper_thread = try dbuz.spawnLooperThread(testing.allocator, conn, &cond);
+
+    try conn.hello();
+    std.debug.print("Bus unique name: {s}\n", .{conn.unique_name.?});
+    cond = true;
+
+    // const MyInterface = Interface.AutoInterface(struct {
+    //     pub const interface_name: []const u8 = "my.system.Root";
+    //
+    //     pub const Echo = dbuz.types.Method(m_echo, .{ .argument_names = &.{ "text" }, .argument_types = &.{ null } });
+    //     pub const Add = dbuz.types.Method(m_add, .{ .argument_names = &.{ "a", "b" }, .argument_types = &.{ null, null } });
+    //     pub const Fail = dbuz.types.Method(m_fail, .{});
+    //     pub const Void = dbuz.types.Method(m_void, .{});
+    //     pub const SSH = dbuz.types.Method(ryr, .{});
+    //
+    //     pub const RequestName = dbuz.types.Method(req_name, .{});
+    //
+    //     pub const version = dbuz.types.Property(u32, &1, .{});
+    //     pub const somestr = dbuz.types.Property(dbuz.types.String, null, .{ .mode = .Read });
+    //
+    //     pub const SignalX = dbuz.types.Signal(struct {}, .{});
+    //     pub const SingalY = dbuz.types.Signal(u32, .{});
+    //
+    //     conn: *Connection = undefined,
+    //
+    //     fn m_echo(_: *@This(), msg: dbuz.types.String) dbuz.types.String {
+    //         return msg;
+    //     }
+    //
+    //     fn m_add(_: *@This(), a: i32, b: i32) i32 {
+    //         return a + b;
+    //     }
+    //
+    //     fn @"m_fail"(_: *@This()) !void {
+    //         return error.Fucked;
+    //     }
+    //
+    //     fn @"m_void"(_: *@This()) void {
+    //         // do nothing
+    //         std.debug.print("A\n", .{});
+    //     }
+    //
+    //     fn ryr(_: *@This()) !void {
+    //         return error.Unhandled;
+    //     }
+    //
+    //     fn req_name(self: *@This(), name: dbuz.types.String) !void {
+    //         const promise = try self.conn.dbus.RequestName(name.value, .{});
+    //         if (promise.release() == 1) promise.destroy();
+    //     }
+    //
+    //
+    // }, null);
+    //
+    // try conn.dbus.NameOwnerChanged.subscribe(&name_owner_changed, null, .Persistent);
+    //
+    // const iface_impl = try MyInterface.create(allocator);
+    // iface_impl.data.conn = conn;
+    // iface_impl.properties = .{
+    //     .somestr = .{ .value = "hui" }
+    // };
+    // try conn.registerInterface(iface_impl, "/org/example/MyObject", allocator);
+    // defer _ = conn.unregisterInterface(iface_impl, "/org/example/MyObject");
+    // defer if (iface_impl.interface.release() == 1) iface_impl.interface.deinit(allocator);
+    looper_thread.join();
 }
 
-test "dbus_multithreaded_session_connect" {
-    if (builtin.single_threaded) return error.SkipZigTest;
-    const conn = dbuz.connect(testing.allocator, .{ .bus = .Session, .enable_introspection = false, .config = .{} }) catch |err| switch (err) {
-        error.ConnectionLost => return err,
-        else => return error.SkipZigTest,
-    };
-    defer conn.deinit();
+// test "Test Factory" {
+//     const gpa = testing.allocator;
+//     const MyInterface = Interface.AutoInterface(struct {
+//         pub const interface_name: []const u8 = "my.system.SSH";
+//
+//         pub const Echo = dbuz.types.Method(m_echo);
+//         pub const Add = dbuz.types.Method(m_add);
+//         pub const Fail = dbuz.types.Method(m_fail);
+//         pub const Void = dbuz.types.Method(m_void);
+//         pub const Root = dbuz.types.Method(ryr);
+//
+//         pub const version = dbuz.types.Property(u32, &1, .ReadWrite);
+//         pub const somestr = dbuz.types.Property(dbuz.types.String, null, .Read);
+//
+//         fn m_echo(_: *@This(), msg: dbuz.types.String) dbuz.types.String {
+//             return msg;
+//         }
+//
+//         fn m_add(_: *@This(), a: i32, b: i32) i32 {
+//             return a + b;
+//         }
+//
+//         fn @"m_fail"(_: *@This()) !void {
+//             return error.Fucked;
+//         }
+//
+//         fn @"m_void"(_: *@This()) void {
+//             // do nothing
+//         }
+//
+//         fn ryr(_: *@This()) !void {
+//             return error.@"ыыр кщще";
+//         }
+//
+//     }, null);
+//
+//     var obj = try MyInterface.create(gpa);
+//     if (obj.interface.release() == 1) {
+//         obj.interface.deinit(gpa);
+//     }
+// }
 
-    const run_cond, const thread = try dbuz.spawnPollingThread(conn, testing.allocator);
-    defer testing.allocator.destroy(run_cond);
-    defer thread.join();
-    defer run_cond.* = false;
-
-    std.posix.nanosleep(0, std.time.ns_per_ms * 25);
-    try testing.expect(conn.unique_name != null);
-}
-
-test "dbuz_singlethreaded_system_connect" {
-    const conn = dbuz.connect(testing.allocator, .{ .bus = .System, .enable_introspection = false, .config = .{} }) catch |err| switch (err) {
-        error.ConnectionLost => return err,
-        else => return error.SkipZigTest,
-    };
-    defer conn.deinit();
-
-    try waitOnFD(conn.getFd(), std.time.ms_per_s);
-    try conn.update(false);
-    try testing.expect(conn.unique_name != null);
-}
-
-test "dbus_multithreaded_system_connect" {
-    if (builtin.single_threaded) return error.SkipZigTest;
-    const conn = dbuz.connect(testing.allocator, .{ .bus = .System, .enable_introspection = false, .config = .{} }) catch |err| switch (err) {
-        error.ConnectionLost => return err,
-        else => return error.SkipZigTest,
-    };
-    defer conn.deinit();
-
-    const run_cond, const thread = try dbuz.spawnPollingThread(conn, testing.allocator);
-    defer testing.allocator.destroy(run_cond);
-    defer thread.join();
-    defer run_cond.* = false;
-
-    std.posix.nanosleep(0, std.time.ns_per_ms * 25);
-    try testing.expect(conn.unique_name != null);
-}
-
-test "evaluate all" {
-    // testing.refAllDeclsRecursive(dbuz);
-
-    const conn = try dbuz.connect(testing.allocator, .{});
-    defer conn.deinit();
-
-    const run_cond, const thread = try dbuz.spawnPollingThread(conn, testing.allocator);
-    defer testing.allocator.destroy(run_cond);
-    defer thread.join();
-    defer run_cond.* = false;
-
-    const service = try conn.requestName("org.example.DBuz", .{});
-    defer service.release();
-
-    std.posix.nanosleep(15, 0);
-}

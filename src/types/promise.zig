@@ -31,7 +31,7 @@ pub fn Promise(comptime T: type) type {
             response: T,
             @"error": ErrorData,
 
-            pub fn toValue(s: *Storage) Value {
+            pub fn toValue(s: *const Storage) Value {
                 if (T != Message) return s.*
                 else return switch (s) {
                     .response => Value{.response = &s.response},
@@ -111,6 +111,13 @@ pub fn Promise(comptime T: type) type {
             p.mutex.lock();
             switch (p.state) {
                 .Completed => {
+                    // Usually deinitializing arena is enough, but in case with file descriptors we need to close them manually.
+                    if (p.result) |stored| {
+                        switch (stored.toValue()) {
+                            .response => |r| deinitRecursive(r, p.result_arena.?.allocator()),
+                            .@"error" => {}
+                        }
+                    }
                     if (p.result_arena) |arena| {
                         arena.deinit();
                         arena.child_allocator.destroy(arena);
@@ -193,6 +200,7 @@ pub fn Promise(comptime T: type) type {
                             .error_code = error.Failed,
                             .message = "Unable to read message: Reading failed",
                         }};
+                        m.deinit();
                         break :r Storage{.response = values};
                     }
                 },
@@ -263,3 +271,5 @@ pub const PromiseOpaque = struct {
 
     vtable: *const VTable,
 };
+
+const deinitRecursive = @import("dbus_types.zig").deinitValueRecursive;

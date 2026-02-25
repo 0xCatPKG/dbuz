@@ -55,6 +55,8 @@ pub fn deinitValueRecursive(value: anytype, allocator: std.mem.Allocator) void {
             .@"struct" => |st| {
                 if (isDict(value)) {
                     value.deinit();
+                } else if (isFileHandle(T)) {
+                    std.posix.close(value.handle);
                 } else for (st.fields) |field| {
                     deinitValueRecursive(@field(value, field.name), allocator);
                 }

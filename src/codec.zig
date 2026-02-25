@@ -390,7 +390,9 @@ pub const Reader = struct {
                             self.position += 4;
 
                             if (index >= @as(u32, @truncate(self.fdlist.?.items.len))) return error.InvalidFDIndex;
-                            const fd = self.fdlist.?.items[index];
+
+                            // Ensure that fd is usable even after message deinit (needed by Promise)
+                            const fd = try std.posix.dup(self.fdlist.?.items[index]);
 
                             return T{
                                 .handle = fd,
