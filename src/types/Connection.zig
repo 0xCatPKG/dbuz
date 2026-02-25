@@ -270,7 +270,7 @@ fn handleIntrospection(c: *Connection, m: *Message, arena: mem.Allocator) !void 
         const xml_w = &xml.writer;
 
         errdefer |e| {
-            var error_reply: ?Message = c.startMessage() catch null;
+            var error_reply: ?Message = c.startMessage(arena) catch null;
             if (error_reply) |*err| {
                 err.type = .@"error";
                 err.fields = .{
@@ -302,7 +302,7 @@ fn handleIntrospection(c: *Connection, m: *Message, arena: mem.Allocator) !void 
         }
         _ = try xml_w.write("</node>\n");
 
-        var reply = try c.startMessage();
+        var reply = try c.startMessage(arena);
         reply.type = .method_response;
         reply.fields = .{
             .destination = m.fields.sender,
@@ -314,7 +314,7 @@ fn handleIntrospection(c: *Connection, m: *Message, arena: mem.Allocator) !void 
         // std.debug.print("{s}\n", .{xml.written()});
         return c.sendMessage(&reply);
     } else {
-        var err = try c.startMessage();
+        var err = try c.startMessage(arena);
         err.type = .@"error";
         err.fields = .{
             .destination = m.fields.sender,
@@ -380,7 +380,7 @@ pub fn handleMessage(c: *Connection, m_a: struct {Message, *std.heap.ArenaAlloca
                 if (response) |*r| try c.sendMessage(r);
 
             } else {
-                var err = try c.startMessage();
+                var err = try c.startMessage(arena.allocator());
                 err.type = .@"error";
                 err.fields = .{
                     .destination = message.fields.sender,
