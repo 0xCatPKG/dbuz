@@ -161,6 +161,7 @@ pub fn advance(self: *Connection, allocator: ?mem.Allocator) !?struct {Message, 
             const m = self.pending_message orelse unreachable;
             const a = self.pending_arena orelse unreachable;
             self.pending_message = null;
+            self.pending_arena = null;
             logger.debug("[Message:{}] Received message: {?s} -> {?s} ({?s}@{?s}.{?s}())", .{
                 m.serial,
                 m.fields.sender,
@@ -585,11 +586,6 @@ pub fn sendMessage(c: *Connection, m: *Message) !void {
 
 pub fn deinit(c: *Connection) void {
     {
-        if (c.pending_message) |*m| m.deinit();
-        // if (c.pending_arena) |a| {
-        //     // a.deinit();
-        //     // a.child_allocator.destroy(a);
-        // }
         if (c.unique_name) |unique_name| c.default_allocator.free(unique_name);
 
         c.tracker_lock.lock();
@@ -621,6 +617,11 @@ pub fn deinit(c: *Connection) void {
 
         c.reader.deinit();
         c.dbus.deinit();
+    }
+    if (c.pending_message) |*m| m.deinit();
+    if (c.pending_arena) |a| {
+        a.deinit();
+        a.child_allocator.destroy(a);
     }
     posix.close(c.handle);
     c.listeners.list.deinit(c.default_allocator);
