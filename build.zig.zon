@@ -1,8 +1,8 @@
 .{
     .name = .dbuz,
-    .version = "0.0.0",
+    .version = "0.0.2",
     .fingerprint = 0x3ccbb597e5563b86, // Changing this has security and trust implications.
-    .minimum_zig_version = "0.14.1",
+    .minimum_zig_version = "0.15.2",
 
     .dependencies = .{
         .xml = .{
