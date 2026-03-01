@@ -17,8 +17,8 @@ const BuiltinType = std.builtin.Type;
 name:        []const u8,
 description: []const u8,
 
-connection:  ?*Connection = null,
-object_path: ?[]const u8 = null,
+connection:  ?*Connection,
+object_path: ?[]const u8,
 
 vtable: *const VTable,
 refcounter: atomic.Value(isize) = .init(1),
@@ -36,10 +36,6 @@ pub const VTable = struct {
     /// Pretty much same as with .method_call, but implementation must fully handle org.freedesktop.DBus.Properties interface methods.
     /// Also, Message's .reader() is already populated and advanced past the "interface: `s`" element of body.
     property_op: ?*const fn (i: *Interface, message: *Message, allocator: mem.Allocator) Error!?Message,
-    /// Signal handler implementation for __proxy__ implementations. Parameters' semantics are same as in .method_call.
-    /// signal implementation must handle all possible signals that can be emitted by remote interface (behavior is unchecked)
-    /// and call associated fields .receive method with received message. For generating fields with needed fields please look at dbuz.types.SignalProxy.
-    signal: ?*const fn (i: *Interface, message: *Message, allocator: mem.Allocator) Error!void,
 
     /// Implementation-defined destructor. allocator must be a same allocator that was used during .create call
     destroy: *const fn (i: *Interface, allocator: mem.Allocator) void,
@@ -59,7 +55,7 @@ pub fn AutoInterface(comptime T: type, comptime desc: ?*const []const u8) type {
     const properties = propertyList(T);
     const signals = signalList(T);
 
-    const Properties, const TypeUnion = PropertiesStorage(T);
+    const Properties, const TypeUnion, const TypeEnum = PropertyStorage(T);
 
     var enum_names: []const BuiltinType.EnumField = &.{};
     inline for (signals, 0..) |signal_name, i| {
@@ -79,6 +75,7 @@ pub fn AutoInterface(comptime T: type, comptime desc: ?*const []const u8) type {
         const Template = T;
         pub const PropertiesType = Properties;
         pub const PropertiesUnion = TypeUnion;
+        pub const PropertiesEnum = TypeEnum;
         pub const SignalNames = SignalNamesT;
 
         pub const interface_name = name;
@@ -89,10 +86,11 @@ pub fn AutoInterface(comptime T: type, comptime desc: ?*const []const u8) type {
         interface: Interface = .{
             .name = name,
             .description = description,
+            .connection = null,
+            .object_path = null,
             .vtable = &.{
                 .method_call = method_call,
                 .property_op = property_op,
-                .signal = null,
 
                 .destroy = destroy,
             },
@@ -131,6 +129,54 @@ pub fn AutoInterface(comptime T: type, comptime desc: ?*const []const u8) type {
             }
             unreachable;
         }
+
+        pub inline fn setProperty(impl: *@This(), comptime property: PropertiesEnum, value: @field(Template, @tagName(property)).Type) !void {
+            const c = impl.interface.connection.?;
+
+            impl.properties._mutex.lock();
+            @field(impl.properties, @tagName(property)) = value;
+            impl.properties._mutex.unlock();
+
+            if (@field(Template, @tagName(property)).signal) |emit_signal| {
+                switch (emit_signal) {
+                    .false, .@"const" => {},
+                    else => {
+                        const m = try c.startMessage(null);
+                        m.setInterface("org.freedesktop.DBus.Properties")
+                         .setMember("PropertiesChanged")
+                         .setPath(impl.interface.object_path.?)
+                         .setSignature("sa{sv}as");
+                        m.type = .signal;
+
+                        defer m.deinit();
+                        const ReplyDict = types.Dictionary(types.String, PropertiesUnion);
+
+                        const w = m.writer();
+                        try w.write(types.String{ .value = interface_name });
+
+                        if (emit_signal == .true) {
+                            var membuf: [1024]u8 = undefined;
+                            var fixalloc = std.heap.FixedBufferAllocator(&membuf);
+                            var d = ReplyDict.init(fixalloc.allocator());
+                            try d.put(@tagName(property), @unionInit(PropertiesUnion, @tagName(property), value));
+                            try w.write(d);
+                        } else {
+                            const invalidated: []const types.String = &.{ types.String{ .value = @tagName(property) } };
+                            try w.write(invalidated);
+                        }
+
+                        try c.sendMessage(&m);
+                    }
+                }
+            }
+        }
+
+        pub fn getProperty(impl: *@This(), comptime property: PropertiesEnum) @field(Template, @tagName(property)).Type {
+            impl.properties._mutex.lock();
+            defer impl.properties._mutex.unlock();
+            return @field(impl.properties, @tagName(property));
+        }
+
 
         fn method_call(iface: *Interface, message: *Message, allocator: mem.Allocator) Error!?Message {
             const impl: *@This() = @fieldParentPtr("interface", iface);
@@ -210,6 +256,8 @@ pub fn AutoInterface(comptime T: type, comptime desc: ?*const []const u8) type {
 
             switch (op) {
                 .GetAll => {
+                    impl.properties._mutex.lock();
+                    defer impl.properties._mutex.unlock();
                     const ReplyDict = types.Dictionary(types.String, PropertiesUnion);
 
                     var values = ReplyDict.init(allocator);
@@ -335,59 +383,6 @@ pub fn deinit(i: *Interface, allocator: mem.Allocator) void {
     i.vtable.destroy(i, allocator);
 }
 
-fn PropertiesStorage(comptime T: type) struct {type, type} {
-    const properties = propertyList(T);
-
-    var struct_fields: []const BuiltinType.StructField    = &.{};
-    var type_enum_fields: []const BuiltinType.EnumField   = &.{};
-    var type_union_fields: []const BuiltinType.UnionField = &.{};
-
-    for (properties, 0..) |property_name, i| {
-        const Property = @field(T, property_name);
-        struct_fields = struct_fields ++ .{ BuiltinType.StructField{
-            .name = property_name,
-            .type = Property.Type,
-            .alignment = @alignOf(Property.Type),
-            .default_value_ptr = Property.default_value,
-            .is_comptime = false,
-        }};
-        type_enum_fields = type_enum_fields ++ .{ BuiltinType.EnumField{
-            .name = property_name,
-            .value = i,
-        }};
-        type_union_fields = type_union_fields ++ .{BuiltinType.UnionField{
-            .name = property_name,
-            .alignment = @alignOf(Property.Type),
-            .type = Property.Type,
-        }};
-    }
-
-    const TypeEnum = @Type(.{
-        .@"enum" = .{
-            .decls = &.{},
-            .fields = type_enum_fields,
-            .is_exhaustive = false,
-            .tag_type = u32,
-        }
-    });
-    const TypeUnion = @Type(.{
-        .@"union" = .{
-            .decls = &.{},
-            .fields = type_union_fields,
-            .tag_type = TypeEnum,
-            .layout = .auto,
-        }
-    });
-
-    return .{@Type(.{
-        .@"struct" = .{
-            .decls = &.{},
-            .fields = struct_fields,
-            .layout = .auto,
-            .is_tuple = false,
-        }
-    }), TypeUnion};
-}
 
 pub fn bind(i: *Interface, c: *Connection, path: []const u8) void {
     i.connection = c;
@@ -397,3 +392,5 @@ pub fn bind(i: *Interface, c: *Connection, path: []const u8) void {
 const methodList = types.methodList;
 const propertyList = types.propertyList;
 const signalList = types.signalList;
+
+const PropertyStorage = types.PropertiesStorage;

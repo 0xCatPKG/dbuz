@@ -22,6 +22,7 @@ const PromiseOpaque = dbuz.types.PromiseOpaque;
 const PromiseError = dbuz.types.PromiseError;
 const Interface = dbuz.types.Interface;
 const MatchRule = dbuz.types.MatchRule;
+const Proxy = dbuz.types.Proxy;
 
 const default_buffer_size = 4096;
 
@@ -31,7 +32,7 @@ const InterfaceManaged = struct {
 };
 
 const ListenerManaged = struct {
-    interface: *Interface,
+    interface: *Proxy,
     rule: MatchRule,
     allocator: mem.Allocator,
     c: *Connection,
@@ -75,7 +76,7 @@ listeners: struct {
 },
 
 /// org.freedesktop.DBus proxy bound to current connection.
-dbus: dbuz.proxies.DBus,
+dbus: dbuz.proxies.DBus = undefined,
 
 /// DBus unique name. null before call to hello(Async);
 unique_name: ?[]const u8 = null,
@@ -103,7 +104,6 @@ pub fn init(allocator: mem.Allocator, handle: posix.fd_t) !*Connection {
             .mutex = .{},
             .list = .empty,
         },
-        .dbus = try .init(c),
         .pending_message = null,
         .pending_arena = null,
     };
@@ -192,6 +192,16 @@ pub fn startMessage(self: *Connection, gpa: ?std.mem.Allocator) !Message {
 
 fn helloReplied(_: *Promise(dbuz.types.String), name: dbuz.types.String, _: *std.heap.ArenaAllocator, userdata: ?*anyopaque) void {
     const c: *Connection = @alignCast(@ptrCast(userdata));
+
+    c.dbus = .bind(c, .{
+        .NameOwnerChanged = null,
+        .NameAcquired = null,
+        .NameLost = null,
+        .ActivatableServicesChanged = null,
+
+        .userdata = null,
+    });
+
     var unique_id: usize = undefined;
     const promise = c.registerListenerAsync(&c.dbus, .{
         .interface = "org.freedesktop.DBus",
@@ -204,9 +214,10 @@ fn helloReplied(_: *Promise(dbuz.types.String), name: dbuz.types.String, _: *std
 }
 
 fn helloFailed(_: *Promise(dbuz.types.String), err: PromiseError, _: ?*anyopaque) void {
-    logger.debug("Hello failed: {s}", .{
+    logger.err("Hello failed: {s}", .{
         err.message orelse @errorName(err.error_code)
     });
+    unreachable;
 }
 
 /// Sends org.freedesktop.DBus.Hello on message bus in asyncronous manner.
@@ -215,7 +226,7 @@ fn helloFailed(_: *Promise(dbuz.types.String), err: PromiseError, _: ?*anyopaque
 ///
 /// Returns promise to a DBus String, that is connection's unique name.
 pub fn helloAsync(c: *Connection) !*Promise(dbuz.types.String) {
-    const promise = try c.dbus.Hello();
+    const promise = try dbuz.proxies.DBus.Hello(c);
     promise.setupCallbacks(.{
         .response = &helloReplied,
         .@"error" = &helloFailed,
@@ -252,6 +263,8 @@ pub fn trackResponse(c: *Connection, message: Message, comptime T: type) !*Promi
     const entry = try c.tracker.getOrPut(c.default_allocator, message.serial);
     if (entry.found_existing) return error.DuplicateSerial;
     entry.value_ptr.* = &promise.interface;
+
+    std.debug.print("Started tracking reply to message {}\n", .{message.serial});
 
     return promise.reference();
 }
@@ -369,6 +382,8 @@ pub fn handleMessage(c: *Connection, m_a: struct {Message, *std.heap.ArenaAlloca
             // Reply without reply_serial is protocol violation, so we silently drop it.
             if (message.fields.reply_serial == null) return;
 
+            std.debug.print("Received response to message serial {} in message with serial {}\n", .{message.fields.reply_serial.?, message.serial});
+
             c.tracker_lock.lock();
             const entry = c.tracker.fetchSwapRemove(message.fields.reply_serial.?);
             c.tracker_lock.unlock();
@@ -422,7 +437,7 @@ pub fn handleMessage(c: *Connection, m_a: struct {Message, *std.heap.ArenaAlloca
 
             for (c.listeners.list.items) |listener| {
                 if (!listener.rule.match(&message)) continue;
-                listener.interface.vtable.signal.?(listener.interface, &message, arena.allocator()) catch {};
+                listener.interface.handleSignal(&message, arena.allocator()) catch {};
             }
         },
         else => {}
@@ -478,7 +493,7 @@ fn listenerAddError(_: *Promise(void), cause: PromiseError, userdata: ?*anyopaqu
 
     for (listener.c.listeners.list.items, 0..) |data, i| {
         if (data.unique_id != listener.unique_id) continue;
-        if (data.interface.release() == 1) data.interface.deinit(data.allocator);
+        if (data.interface.release() == 1) data.interface.destroy(data.allocator);
         _ = listener.c.listeners.list.swapRemove(i);
         return;
     }
@@ -492,7 +507,7 @@ pub fn registerListenerAsync(c: *Connection, impl: anytype, rule: MatchRule, uni
     defer c.listeners.mutex.unlock();
 
     _ = impl.interface.reference();
-    errdefer if (impl.interface.release() == 1) impl.interface.deinit(allocator);
+    errdefer if (impl.interface.release() == 1) impl.interface.destroy(allocator);
 
     const key = try rule.string(allocator);
     defer allocator.free(key);
@@ -605,7 +620,7 @@ pub fn deinit(c: *Connection) void {
         }
         {
             for (c.listeners.list.items) |listener_managed| {
-                if (listener_managed.interface.release() == 1) listener_managed.interface.deinit(listener_managed.allocator);
+                if (listener_managed.interface.release() == 1) listener_managed.interface.destroy(listener_managed.allocator);
             }
         }
 

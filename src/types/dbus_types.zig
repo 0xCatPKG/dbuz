@@ -199,10 +199,17 @@ const PropertyMode = enum {
     Write,
     ReadWrite,
 };
+const PropertyChangedSignal = enum {
+    true,
+    false,
+    invalidates,
+    @"const",
+};
 const PropertyOpts = struct {
     /// Access mode
     mode: PropertyMode = .ReadWrite,
-    deprecated: bool = false,
+    signal: ?PropertyChangedSignal = null,
+    deprecated: ?bool = null,
 };
 
 /// Generate property declaration for Interface.AutoInterface based on type T, with specified default value and specified options.
@@ -214,6 +221,7 @@ pub fn Property(comptime T: type, default: ?*const T, comptime opts: PropertyOpt
         pub const Type: type = T;
         pub const default_value: ?*const anyopaque = default;
         pub const mode = opts.mode;
+        pub const signal = opts.signal;
         pub const deprecated = opts.deprecated;
     };
 }
@@ -485,7 +493,21 @@ pub fn introspectProperty(comptime name: []const u8, comptime T: type) []const u
         .Write => "write",
         .ReadWrite => "readwrite",
     };
-    return (" " ** 8) ++ std.fmt.comptimePrint("<property name=\"{s}\" type=\"{s}\" access=\"{s}\"/>\n", .{name, proptype, access});
+
+    const has_annotation = T.deprecated != null or T.signal != null;
+
+    var annotations: []const u8 = "";
+    if (T.deprecated) |deprecated| annotations += (" " ** 12) ++ std.fmt.comptimePrint("<annotation name=\"org.freedesktop.DBus.Deprecated\" value=\"{}\"/>\n", .{deprecated});
+    if (T.signal) |signal| annotations += (" " ** 12) ++ std.fmt.comptimePrint("<annotation name=\"org.freedesktop.DBus.Property.EmitsChangedSignal\" value=\"{s}\"/>\n", .{@tagName(signal)});
+
+    return (" " ** 8) ++ std.fmt.comptimePrint("<property name=\"{s}\" type=\"{s}\" access=\"{s}\"{s}{s}{s}", .{
+        name,
+        proptype,
+        access,
+        if (has_annotation) ">\n" else "/>\n",
+        annotations,
+        if (has_annotation) (" " ** 8) ++ "</property>\n" else ""
+    });
 }
 
 pub fn introspectSignal(comptime name: []const u8, comptime T: type) []const u8 {
@@ -592,3 +614,163 @@ pub inline fn signalList(comptime T: type) []const [:0]const u8 {
     return list;
 }
 
+pub fn PropertiesStorage(comptime T: type) struct {type, type, type} {
+    const properties = propertyList(T);
+
+    var struct_fields: []const BuiltinType.StructField    = &.{};
+    var type_enum_fields: []const BuiltinType.EnumField   = &.{};
+    var type_union_fields: []const BuiltinType.UnionField = &.{};
+
+    for (properties, 0..) |property_name, i| {
+        const Prop = @field(T, property_name);
+        struct_fields = struct_fields ++ .{ BuiltinType.StructField{
+            .name = property_name,
+            .type = Prop.Type,
+            .alignment = @alignOf(Prop.Type),
+            .default_value_ptr = Prop.default_value,
+            .is_comptime = false,
+        }};
+        type_enum_fields = type_enum_fields ++ .{ BuiltinType.EnumField{
+            .name = property_name,
+            .value = i,
+        }};
+        type_union_fields = type_union_fields ++ .{BuiltinType.UnionField{
+            .name = property_name,
+            .alignment = @alignOf(Prop.Type),
+            .type = Prop.Type,
+        }};
+    }
+
+    struct_fields = struct_fields ++ .{
+        BuiltinType.StructField{
+            .name = "_mutex",
+            .type = std.Thread.Mutex,
+            .alignment = @alignOf(std.Thread.Mutex),
+            .default_value_ptr = &std.Thread.Mutex{},
+            .is_comptime = false,
+        }
+    };
+
+    const TypeEnum = @Type(.{
+        .@"enum" = .{
+            .decls = &.{},
+            .fields = type_enum_fields,
+            .is_exhaustive = false,
+            .tag_type = u32,
+        }
+    });
+    const TypeUnion = @Type(.{
+        .@"union" = .{
+            .decls = &.{},
+            .fields = type_union_fields,
+            .tag_type = TypeEnum,
+            .layout = .auto,
+        }
+    });
+
+    return .{@Type(.{
+        .@"struct" = .{
+            .decls = &.{},
+            .fields = struct_fields,
+            .layout = .auto,
+            .is_tuple = false,
+        }
+    }), TypeUnion, TypeEnum};
+}
+
+pub fn SignalListener(comptime T: type) type {
+    const signals = signalList(T);
+
+    var sfields: []const BuiltinType.StructField = &.{};
+    for (signals) |signame| {
+        const S = @field(T, signame);
+        var params: []const BuiltinType.Fn.Param = &.{};
+
+        const sig_info = @typeInfo(S.Signature).@"struct";
+        for (sig_info.fields) |field| {
+            params = params ++ .{ BuiltinType.Fn.Param{ 
+                .type = field.type,
+                .is_noalias = false,
+                .is_generic = false,
+            } };
+        }
+        params = params ++ .{ BuiltinType.Fn.Param{
+            .type = ?*anyopaque,
+            .is_noalias = false,
+            .is_generic = false,
+        } };
+
+        const SigFn = @Type(.{
+            .@"fn" = .{
+                .calling_convention = .auto,
+                .is_generic = false,
+                .is_var_args = false,
+                .return_type = void,
+                .params = params
+            }
+        });
+
+        sfields = sfields ++ .{ BuiltinType.StructField{
+            .name = signame,
+            .type = ?*const SigFn,
+            .alignment = @alignOf(?*const SigFn),
+            .default_value_ptr = null,
+            .is_comptime = false
+        } };
+    }
+
+    sfields = sfields ++ .{ BuiltinType.StructField{
+        .name = "userdata",
+        .type = ?*anyopaque,
+        .alignment = @alignOf(?*anyopaque),
+        .default_value_ptr = null,
+        .is_comptime = false
+    } };
+    return @Type(.{
+        .@"struct" = .{
+            .backing_integer = null,
+            .decls = &.{},
+            .fields = sfields,
+            .is_tuple = false,
+            .layout = .auto
+        }
+    });
+}
+
+pub const SignalListenerPersistance = enum (u8) {
+    Persistent,
+    OneShot,
+};
+
+pub fn SignalManager(comptime T: type) type {
+    const signals = signalList(T);
+    const SignalListenerT = SignalListener(T);
+
+    return struct {
+        const Self = @This();
+
+        pub const Template = T;
+        pub const Listener = SignalListenerT;
+
+        listener: Listener,
+
+        pub fn init(listener: Listener) Self {
+            return .{ .listener = listener };
+        }
+
+        pub fn handle(s: *Self, m: *Message, gpa: std.mem.Allocator) error{Unhandled,HandlingFailed}!void {
+            const r = m.reader() catch return error.HandlingFailed;
+            inline for (signals) |signame| {
+                if (!std.mem.eql(u8, m.fields.member.?, signame)) comptime continue;
+                if (@field(s.listener, signame)) |handler| {
+                    const v = r.read(@field(T, signame).Signature, gpa) catch return error.HandlingFailed;
+                    const call_params = v ++ .{ s.listener.userdata };
+                    return @call(.auto, handler, call_params);
+                }
+            }
+            return error.Unhandled;
+        }
+    };
+}
+
+const BuiltinType = std.builtin.Type;

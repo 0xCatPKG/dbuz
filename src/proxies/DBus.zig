@@ -6,7 +6,10 @@ const dbuz = @import("../dbuz.zig");
 
 const Method = dbuz.types.Method;
 const Property = dbuz.types.Property;
-const SignalProxy = dbuz.types.SignalProxy;
+const Signal = dbuz.types.Signal;
+const SignalManager = dbuz.types.SignalManager;
+
+const Proxy = dbuz.types.Proxy;
 
 const Connection = dbuz.types.Connection;
 const Promise = dbuz.types.Promise;
@@ -15,8 +18,8 @@ const String = dbuz.types.String;
 
 pub const interface_name = "org.freedesktop.DBus";
 
-pub fn Hello(i: *const DBus) !*Promise(String) {
-    var request = try i.c.startMessage(null);
+pub fn Hello(c: *Connection) !*Promise(String) {
+    var request = try c.startMessage(null);
     defer request.deinit();
     request.type = .method_call;
     request.fields = .{
@@ -25,9 +28,9 @@ pub fn Hello(i: *const DBus) !*Promise(String) {
         .member = "Hello",
         .path = "/org/freedesktop/DBus",
     };
-    const promise = try i.c.trackResponse(request, String);
+    const promise = try c.trackResponse(request, String);
     errdefer if (promise.release() == 1) promise.destroy();
-    try i.c.sendMessage(&request);
+    try c.sendMessage(&request);
     return promise;
 }
 
@@ -402,54 +405,41 @@ pub fn GetId(i: *const DBus) !*Promise(String) {
     return promise;
 }
 
+pub const Signals = struct {
+    pub const NameOwnerChanged = Signal(struct { String, String, String }, .{});
+    pub const NameLost = Signal(struct { String }, .{});
+    pub const NameAcquired = Signal(struct { String }, .{});
+    pub const ActivatableServicesChanged = Signal(struct {}, .{});
+};
+
 c: *Connection,
-NameOwnerChanged: SignalProxy(struct { String, String, String }),
-NameLost: SignalProxy(struct { String }),
-NameAcquired: SignalProxy(struct { String }),
-ActivatableServicesChanged: SignalProxy(struct {}),
-interface: Interface = .{
+interface: Proxy = .{
     .name = DBus.interface_name,
     .connection = null,
     .refcounter = .init(1),
-    .description = "",
-    .object_path = null,
+    .object_path = "/org/freedesktop/DBus",
     .vtable = &.{
-        .method_call = null,
-        .property_op = null,
-        .signal = &signal,
-
+        .handle_signal = &signal,
         .destroy = &destroy,
     }
 },
+signals: SignalManager(Signals),
 
-pub fn init(c: *Connection) !DBus {
+pub fn deinit(_: *DBus) void {}
+
+fn destroy(_: *Proxy, _: mem.Allocator) void {}
+
+fn signal(i: *Proxy, m: *Message, gpa: mem.Allocator) Proxy.Error!void {
+    const dbus: *DBus = @fieldParentPtr("interface", i);
+    return dbus.signals.handle(m, gpa) catch error.HandlingFailed;
+}
+
+pub fn bind(c: *Connection, listener: SignalManager(Signals).Listener) DBus {
     return .{
         .c = c,
-        .ActivatableServicesChanged = .init(c.default_allocator),
-        .NameAcquired = .init(c.default_allocator),
-        .NameLost = .init(c.default_allocator),
-        .NameOwnerChanged = .init(c.default_allocator),
+        .signals = .init(listener)
     };
 }
 
-pub fn deinit(i: *DBus) void {
-    i.ActivatableServicesChanged.deinit();
-    i.NameAcquired.deinit();
-    i.NameLost.deinit();
-    i.NameOwnerChanged.deinit();
-}
-
-fn destroy(_: *dbuz.types.Interface, _: mem.Allocator) void {}
-
-fn signal(i: *Interface, m: *Message, gpa: mem.Allocator) Interface.Error!void {
-    const dbus: *DBus = @fieldParentPtr("interface", i);
-    return
-         if (mem.eql(u8, m.fields.member.?, "NameOwnerChanged")) dbus.NameOwnerChanged.receive(m, gpa) catch error.HandlingFailed
-    else if (mem.eql(u8, m.fields.member.?, "NameAcquired")) dbus.NameAcquired.receive(m, gpa) catch error.HandlingFailed
-    else if (mem.eql(u8, m.fields.member.?, "NameLost")) dbus.NameLost.receive(m, gpa) catch error.HandlingFailed
-    else if (mem.eql(u8, m.fields.member.?, "ActivatableServicesChanged")) dbus.ActivatableServicesChanged.receive(m, gpa) catch error.HandlingFailed;
-}
-
-const Interface = dbuz.types.Interface;
 const Message = dbuz.types.Message;
 const mem = std.mem;

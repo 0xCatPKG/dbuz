@@ -142,7 +142,6 @@ pub fn Promise(comptime T: type) type {
         pub fn wait(p: *@This(), timeout_ns: ?u64) !struct {Value, *std.heap.ArenaAllocator} {
             p.mutex.lock();
             defer p.mutex.unlock();
-
             state: switch (p.state) {
                 .Completed => {
                     if (p.result == null) return error.TimedOut;

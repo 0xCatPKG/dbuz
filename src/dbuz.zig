@@ -8,11 +8,12 @@ pub const types = struct {
     pub const PromiseOpaque = @import("types/promise.zig").PromiseOpaque;
     pub const PromiseError = @import("types/promise.zig").ErrorData;
     pub const Interface = @import("types/Interface.zig");
+    pub const Proxy = @import("types/Proxy.zig");
 
     pub const Method = @import("types/dbus_types.zig").Method;
     pub const Property = @import("types/dbus_types.zig").Property;
     pub const Signal = @import("types/dbus_types.zig").Signal;
-    pub const SignalProxy = @import("types/dbus_types.zig").SignalProxy;
+    pub const SignalManager = @import("types/dbus_types.zig").SignalManager;
 
     pub const MatchRule = @import("types/MatchRule.zig");
 
@@ -20,7 +21,7 @@ pub const types = struct {
 };
 
 pub const proxies = struct {
-    pub const DBus = @import("interfaces/DBus.zig");
+    pub const DBus = @import("proxies/DBus.zig");
 };
 
 pub const codec = @import("codec.zig");
