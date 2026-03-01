@@ -7,7 +7,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    _ = b.addModule("dbuz", .{
+    const dbuz_mod = b.addModule("dbuz", .{
         .root_source_file = b.path("src/dbuz.zig"),
         .optimize = optimize,
         .target = target,
@@ -23,4 +23,13 @@ pub fn build(b: *std.Build) void {
     const run_tests = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run all tests");
     test_step.dependOn(&run_tests.step);
+
+    const dbuz_check_lib = b.addLibrary(.{
+        .name = "dbuz",
+        .root_module = dbuz_mod,
+    });
+
+    const check = b.step("check", "Step for ZLS checks");
+    check.dependOn(&dbuz_check_lib.step);
+
 }
