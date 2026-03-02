@@ -276,7 +276,7 @@ pub fn promiseDeadlineReached(c: *Connection, serial: u32) void {
 
     const entry = c.tracker.fetchSwapRemove(serial);
 
-    if (!entry) {
+    if (entry == null) {
         return;
     }
 
@@ -290,7 +290,7 @@ fn handleProperties(c: *Connection, m: *Message, arena: mem.Allocator) !void {
     const interface_name = (try r.read(dbuz.types.String, arena)).value;
     const branch = c.object_tree.tree.get( try trie.runtimePathWithLastComponent(m.fields.path.?, interface_name, arena) );
     if (branch) |node| {
-        var response = try node.leaf.interface.vtable.property_op.?(node.leaf.interface, m, arena);
+        var response = try node.leaf.interface.vtable.property_op(node.leaf.interface, m, arena);
         if (response) |*res| try c.sendMessage(res);
     }
 }
@@ -415,7 +415,7 @@ pub fn handleMessage(c: *Connection, m_a: struct {Message, *std.heap.ArenaAlloca
 
             const child = c.object_tree.tree.get(try trie.runtimePathWithLastComponent(message.fields.path.?, message.fields.interface.?, arena.allocator()));
             if (child) |node| {
-                var response = node.leaf.interface.vtable.method_call.?(node.leaf.interface, &message, arena.allocator()) catch return;
+                var response = node.leaf.interface.vtable.method_call(node.leaf.interface, &message, arena.allocator()) catch return;
                 if (response) |*r| try c.sendMessage(r);
 
             } else {
@@ -555,16 +555,16 @@ pub fn unregisterListener(c: *Connection, unique_id: usize) void {
 
     for (c.listeners.list.items, 0..) |listener, i| {
         if (listener.unique_id != unique_id) continue;
-        if (listener.interface.release() == 1) listener.interface.deinit(listener.allocator);
+        if (listener.interface.release() == 1) listener.interface.destroy(listener.allocator);
         _ = c.listeners.list.swapRemove(i);
 
         const rule_str = listener.rule.string(c.default_allocator) catch null;
-        defer c.default_allocator.free(rule_str);
+        defer if (rule_str) |str| c.default_allocator.free(str);
 
         if (rule_str) |rule| {
             const promise = c.dbus.RemoveMatch(rule) catch null;
             if (promise) |p| {
-                if (p.release() == 1) p.deinit();
+                if (p.release() == 1) p.destroy();
             }
         }
 
@@ -631,7 +631,6 @@ pub fn deinit(c: *Connection) void {
         c.ucreds_queue.deinit(c.default_allocator);
 
         c.reader.deinit();
-        c.dbus.deinit();
     }
     if (c.pending_message) |*m| m.deinit();
     if (c.pending_arena) |a| {

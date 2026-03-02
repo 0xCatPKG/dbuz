@@ -32,10 +32,10 @@ pub const VTable = struct {
     /// so implementation may use @fieldParentPtr to get pointer to implementation itself.
     /// allocator is allocator that was used during Message allocation. Usually backed by ArenaAllocator.
     /// Must return Message (actual response to method_call), null (if no response will be sent), or error (if caller must handle error outside of implementation's scope)
-    method_call: ?*const fn (i: *Interface, message: *Message, allocator: mem.Allocator) Error!?Message,
+    method_call: *const fn (i: *Interface, message: *Message, allocator: mem.Allocator) Error!?Message,
     /// Pretty much same as with .method_call, but implementation must fully handle org.freedesktop.DBus.Properties interface methods.
     /// Also, Message's .reader() is already populated and advanced past the "interface: `s`" element of body.
-    property_op: ?*const fn (i: *Interface, message: *Message, allocator: mem.Allocator) Error!?Message,
+    property_op: *const fn (i: *Interface, message: *Message, allocator: mem.Allocator) Error!?Message,
 
     /// Implementation-defined destructor. allocator must be a same allocator that was used during .create call
     destroy: *const fn (i: *Interface, allocator: mem.Allocator) void,

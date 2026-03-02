@@ -18,6 +18,7 @@ destination: ?[]const u8 = null,
 type: Message.Type = .signal,
 path: ?[]const u8 = null,
 path_namespace: ?[]const u8 = null,
+args: ?[]const ?[]const u8 = null,
 
 /// Build rule string from current MatchRule passable to AddMatch and RemoveMatch DBus calls. Caller owns memory.
 pub fn string(m: *const MatchRule, gpa: mem.Allocator) ![]const u8 {
@@ -32,6 +33,9 @@ pub fn string(m: *const MatchRule, gpa: mem.Allocator) ![]const u8 {
     if (m.sender)      |sender| try w.print(",sender='{s}'", .{sender});
     if (m.destination) |destination| try w.print(",destination='{s}'", .{destination});
     if (m.path)        |path| try w.print(",path='{s}'", .{path});
+    if (m.args)        |args| {
+        for (args, 0..) |arg, i| if (arg != null) try w.print(",arg{}='{s}'", .{i, arg.?}) else {};
+    }
 
     if (m.path_namespace) |path_ns| try w.print(",path_namespace='{s}'", .{path_ns});
 
@@ -39,13 +43,26 @@ pub fn string(m: *const MatchRule, gpa: mem.Allocator) ![]const u8 {
 }
 
 /// Checks if passed message matches the current rule.
-pub fn match(r: *const MatchRule, m: *const Message) bool {
+pub fn match(r: *const MatchRule, m: *Message) bool {
     if (m.type != r.type) return false;
     if (r.member) |member| if (!mem.eql(u8, member, m.fields.member orelse return false)) return false;
     if (r.interface) |interface| if (!mem.eql(u8, interface, m.fields.interface orelse return false)) return false;
     if (r.sender) |sender| if (!mem.eql(u8, sender, m.fields.sender orelse return false)) return false;
     if (r.destination) |dest| if (!mem.eql(u8, dest, m.fields.destination orelse return false)) return false;
     if (r.path) |path| if (!mem.eql(u8, path, m.fields.path orelse return false)) return false;
+    if (r.args) |args| {
+        const reader = m.reader() catch return false;
+        defer reader.reset();
+
+        for (args) |arg| {
+            if (arg == null) continue;
+
+            const str = reader.read(dbuz.types.String, m.allocator) catch return false;
+            defer m.allocator.free(str.value);
+
+            if (!std.mem.eql(u8, str.value, arg.?)) return false;
+        }
+    }
 
     if (r.path_namespace) |path_ns| {
         var scratchbuf: [4096]u8 = undefined;
@@ -71,6 +88,8 @@ pub fn isSubsetOf(r: *const MatchRule, other: MatchRule) bool {
     if (other.sender) |sender| if (!mem.eql(u8, sender, r.sender orelse return false)) return false;
     if (other.destination) |dest| if (!mem.eql(u8, dest, r.destination orelse return false)) return false;
     if (other.path) |path| if (!mem.eql(u8, path, r.path orelse return false)) return false;
+
+    // TODO: Create subset check for r.args
 
     if (other.path_namespace) |path_ns| {
         var scratchbuf: [4096]u8 = undefined;
