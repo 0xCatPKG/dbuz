@@ -241,6 +241,10 @@ pub const Reader = struct {
         return .{ .allocator = allocator, .r = r, .fdlist = fdlist, .endian = byteorder };
     }
 
+    pub fn reset(r: *Reader) void {
+        r.* = .from(r.allocator, r.r, r.fdlist, r.endian);
+    }
+
 
     pub fn read(self: *Reader, T: type, allocator: ?mem.Allocator) !T {
         const a = allocator orelse self.allocator;
@@ -329,7 +333,7 @@ pub const Reader = struct {
                     },
                     .bool => {
                         self.position += try alignBuffer(self.r, 4, self.position);
-                        const value: u32 = try self.r.takeInt(u32, self.enianness);
+                        const value: u32 = try self.r.takeInt(u32, self.endian);
                         self.position += 4;
                         return if (value == 1) true else if (value == 0) false else return error.InvalidBooleanValue;
                     },
@@ -417,11 +421,10 @@ pub const Reader = struct {
                         var matched = false;
                         inline for (un.fields) |ufield| {
                             const field_sig = types.guessSignature(ufield.type);
-                            if (std.mem.eql(u8, sig.value, field_sig)) {
-                                result = @unionInit(T, ufield.name, try self.read(ufield.type, a));
-                                matched = true;
-                                break;
-                            }
+                            if (!std.mem.eql(u8, sig.value, field_sig)) comptime continue;
+                            result = @unionInit(T, ufield.name, try self.read(ufield.type, a));
+                            matched = true;
+                            break;
                         }
                         if (!matched) return error.UnionVariantNotFound;
                         return result;
