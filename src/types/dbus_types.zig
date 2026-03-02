@@ -40,7 +40,7 @@ pub inline fn isDict(comptime T: type) bool {
     return false;
 }
 
-pub fn deinitValueRecursive(value: anytype, allocator: std.mem.Allocator) void {
+pub fn deinitValueRecursive(allocator: std.mem.Allocator, value: anytype) void {
     const T = @TypeOf(value);
     const typeinfo = @typeInfo(T);
 
@@ -49,23 +49,25 @@ pub fn deinitValueRecursive(value: anytype, allocator: std.mem.Allocator) void {
         else => switch (typeinfo) {
             else => {},
             .pointer => {
-                for (value) |child| deinitValueRecursive(child, allocator);
+                for (value) |child| deinitValueRecursive(allocator, child);
                 allocator.free(value);
             },
             .@"struct" => |st| {
-                if (isDict(value)) {
-                    value.deinit();
-                } else if (isFileHandle(T)) {
+                if (comptime isDict(T)) {
+                    const unmanaged = &value.unmanaged;
+                    @constCast(unmanaged).deinit(value.allocator);
+                } else
+                if (comptime isFileHandle(T)) {
                     std.posix.close(value.handle);
-                } else for (st.fields) |field| {
-                    deinitValueRecursive(@field(value, field.name), allocator);
+                } else inline for (st.fields) |field| {
+                    deinitValueRecursive(allocator, @field(value, field.name));
                 }
             },
             .@"union" => |un| {
                 const active_tag = @tagName(value);
                 inline for (un.fields) |field| {
                     if (std.mem.eql(u8, active_tag, field.name)) {
-                        deinitValueRecursive(@field(value, field.name), allocator);
+                        deinitValueRecursive(allocator, @field(value, field.name));
                     }
                 }
             },
@@ -219,7 +221,7 @@ pub fn Property(comptime T: type, default: ?*const T, comptime opts: PropertyOpt
     return packed struct (u0) {
         pub const @".metadata_DBUZ_PROPERTY" = {};
         pub const Type: type = T;
-        pub const default_value: ?*const anyopaque = default;
+        pub const default_value: ?*const anyopaque = @ptrCast(default);
         pub const mode = opts.mode;
         pub const signal = opts.signal;
         pub const deprecated = opts.deprecated;
@@ -614,15 +616,33 @@ pub inline fn signalList(comptime T: type) []const [:0]const u8 {
     return list;
 }
 
+inline fn sliceContains(comptime T: type, haystack: []const T, needle: T) bool {
+    for (haystack) |el| {
+        switch (@typeInfo(T)) {
+            .pointer => |ptr| {
+                if (ptr.size == .slice) if (std.mem.eql(ptr.child, el, needle)) return true;
+            },
+            else => {}
+        }
+        if (el == needle) return true;
+    }
+    return false;
+}
+
 pub fn PropertiesStorage(comptime T: type) struct {type, type, type} {
     const properties = propertyList(T);
 
     var struct_fields: []const BuiltinType.StructField    = &.{};
     var type_enum_fields: []const BuiltinType.EnumField   = &.{};
+    var name_enum_fields: []const BuiltinType.EnumField   = &.{};
     var type_union_fields: []const BuiltinType.UnionField = &.{};
+
+    var added_sigs: []const []const u8 = &.{};
 
     for (properties, 0..) |property_name, i| {
         const Prop = @field(T, property_name);
+        const propsig = guessSignature(Prop.Type);
+
         struct_fields = struct_fields ++ .{ BuiltinType.StructField{
             .name = property_name,
             .type = Prop.Type,
@@ -630,15 +650,26 @@ pub fn PropertiesStorage(comptime T: type) struct {type, type, type} {
             .default_value_ptr = Prop.default_value,
             .is_comptime = false,
         }};
-        type_enum_fields = type_enum_fields ++ .{ BuiltinType.EnumField{
-            .name = property_name,
-            .value = i,
-        }};
-        type_union_fields = type_union_fields ++ .{BuiltinType.UnionField{
-            .name = property_name,
-            .alignment = @alignOf(Prop.Type),
-            .type = Prop.Type,
-        }};
+
+        if (!sliceContains([]const u8, added_sigs, propsig)) {
+            type_enum_fields = type_enum_fields ++ .{ BuiltinType.EnumField{
+                .name = propsig,
+                .value = type_enum_fields.len,
+            }};
+            type_union_fields = type_union_fields ++ .{BuiltinType.UnionField{
+                .name = propsig,
+                .alignment = @alignOf(Prop.Type),
+                .type = Prop.Type,
+            }};
+            added_sigs = added_sigs ++ .{ propsig };
+        }
+
+        name_enum_fields = name_enum_fields ++ .{
+            BuiltinType.EnumField{
+                .name = property_name,
+                .value = i,
+            }
+        };
     }
 
     struct_fields = struct_fields ++ .{
@@ -648,6 +679,13 @@ pub fn PropertiesStorage(comptime T: type) struct {type, type, type} {
             .alignment = @alignOf(std.Thread.Mutex),
             .default_value_ptr = &std.Thread.Mutex{},
             .is_comptime = false,
+        },
+        BuiltinType.StructField{
+            .name = "_inited",
+            .type = bool,
+            .alignment = @alignOf(bool),
+            .default_value_ptr = &false,
+            .is_comptime = false,
         }
     };
 
@@ -655,7 +693,7 @@ pub fn PropertiesStorage(comptime T: type) struct {type, type, type} {
         .@"enum" = .{
             .decls = &.{},
             .fields = type_enum_fields,
-            .is_exhaustive = false,
+            .is_exhaustive = true,
             .tag_type = u32,
         }
     });
@@ -667,6 +705,14 @@ pub fn PropertiesStorage(comptime T: type) struct {type, type, type} {
             .layout = .auto,
         }
     });
+    const NameEnum = @Type(.{
+        .@"enum" = .{
+            .decls = &.{},
+            .fields = name_enum_fields,
+            .tag_type = u32,
+            .is_exhaustive = true,
+        }
+    });
 
     return .{@Type(.{
         .@"struct" = .{
@@ -675,7 +721,7 @@ pub fn PropertiesStorage(comptime T: type) struct {type, type, type} {
             .layout = .auto,
             .is_tuple = false,
         }
-    }), TypeUnion, TypeEnum};
+    }), TypeUnion, NameEnum};
 }
 
 pub fn SignalListener(comptime T: type) type {
@@ -770,6 +816,90 @@ pub fn SignalManager(comptime T: type) type {
             }
             return error.Unhandled;
         }
+    };
+}
+
+pub fn dupeValue(gpa: std.mem.Allocator, v: anytype) !@TypeOf(v) {
+    const T = @TypeOf(v);
+    const t_info = @typeInfo(T);
+
+    switch (T) {
+        String, ObjectPath, Signature => {
+            return T{ .value = try gpa.dupe(u8, v.value), .ownership = true };
+        },
+        else => {},
+    }
+
+    return switch (t_info) {
+        .pointer => |ptr| slice: {
+            std.debug.assert(ptr.size == .slice);
+            const aSlice = try gpa.alloc(ptr.child, v.len);
+            var trackedSlice: []ptr.child = aSlice[0..0];
+
+            errdefer {
+                for (trackedSlice) |el| {
+                    deinitValueRecursive(gpa, el);
+                }
+                gpa.free(aSlice);
+            }
+
+            for (0..v.len) |i| {
+                aSlice[i] = try dupeValue(gpa, v[i]);
+                trackedSlice.len += 1;
+            }
+
+            break :slice aSlice;
+        },
+        .@"struct" => |st| st_blk: {
+            if (isDict(T)) {
+                var dict = T.init(gpa);
+                errdefer dict.deinit();
+
+                errdefer {
+                    var it = dict.iterator();
+                    while (it.next()) |kv| {
+                        deinitValueRecursive(gpa, kv.key_ptr.*);
+                        deinitValueRecursive(gpa, kv.value_ptr.*);
+                    }
+                }
+
+                var it = v.iterator();
+                while (it.next()) |kv| {
+                    const key = try dupeValue(gpa, kv.key_ptr.*);
+                    errdefer deinitValueRecursive(gpa, key);
+
+                    const value = try dupeValue(gpa, kv.value_ptr.*);
+                    errdefer deinitValueRecursive(gpa, value);
+
+                    try dict.putNoClobber(key, value);
+                }
+
+                break :st_blk dict;
+            }
+            else if (isFileHandle(T)) {
+                const handle: T = .{ .handle = try std.posix.dup(v.handle) };
+                break :st_blk handle;
+            }
+            else {
+                var res: T = undefined;
+                var filled_fields: usize = 0;
+                errdefer for (0..filled_fields) |i| deinitValueRecursive(gpa, @field(res, st.fields[i]));
+
+                inline for (st.fields) |field| {
+                    @field(res, field.name) = try dupeValue(gpa, @field(v, field.name));
+                    filled_fields += 1;
+                }
+
+                break :st_blk res;
+            }
+        },
+        .@"union" => |un| un_blk: {
+            inline for (un.fields) |field| {
+                if (!std.mem.eql(u8, field.name, @tagName(v))) comptime continue;
+                break :un_blk @unionInit(T, field.name, try dupeValue(@field(v, field.name), gpa));
+            }
+        },
+        else => v,
     };
 }
 

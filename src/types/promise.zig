@@ -114,7 +114,7 @@ pub fn Promise(comptime T: type) type {
                     // Usually deinitializing arena is enough, but in case with file descriptors we need to close them manually.
                     if (p.result) |stored| {
                         switch (stored.toValue()) {
-                            .response => |r| deinitRecursive(r, p.result_arena.?.allocator()),
+                            .response => |r| deinitRecursive(p.result_arena.?.allocator(), r),
                             .@"error" => {}
                         }
                     }

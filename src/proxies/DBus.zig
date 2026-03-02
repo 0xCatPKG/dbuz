@@ -311,11 +311,11 @@ pub fn GetConnectionUnixProcessID(i: *const DBus, name: []const u8) !*Promise(u3
 }
 
 const CredentialsValue = union (enum) {
-    uint: u32,
-    uint_arr: []u32,
-    string: String,
-    bytes: []const u8,
-    fd: std.fs.File,
+    u: u32,
+    au: []u32,
+    s: String,
+    ay: []const u8,
+    h: std.fs.File,
 };
 const Credentials = dbuz.types.Dict(String, CredentialsValue);
 pub fn GetConnectionCredentials(i: *const DBus, name: []const u8) !*Promise(Credentials) {
@@ -420,14 +420,10 @@ interface: Proxy = .{
     .object_path = "/org/freedesktop/DBus",
     .vtable = &.{
         .handle_signal = &signal,
-        .destroy = &destroy,
+        .destroy = &Proxy.noopDestroy,
     }
 },
 signals: SignalManager(Signals),
-
-pub fn deinit(_: *DBus) void {}
-
-fn destroy(_: *Proxy, _: mem.Allocator) void {}
 
 fn signal(i: *Proxy, m: *Message, gpa: mem.Allocator) Proxy.Error!void {
     const dbus: *DBus = @fieldParentPtr("interface", i);
