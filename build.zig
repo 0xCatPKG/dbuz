@@ -24,12 +24,18 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run all tests");
     test_step.dependOn(&run_tests.step);
 
-    const dbuz_check_lib = b.addLibrary(.{
-        .name = "dbuz",
-        .root_module = dbuz_mod,
+    const check_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("check.zig"),
+            .optimize = optimize,
+            .target = target,
+            .imports = &.{ .{ .name = "dbuz", .module = dbuz_mod} },
+        })
     });
 
+    const run_check = b.addRunArtifact(check_test);
+
     const check = b.step("check", "Step for ZLS checks");
-    check.dependOn(&dbuz_check_lib.step);
+    check.dependOn(&run_check.step);
 
 }
