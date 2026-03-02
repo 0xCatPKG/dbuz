@@ -15,7 +15,6 @@ pub const Error = error{OutOfMemory, HandlingFailed};
 
 pub const VTable = struct {
     handle_signal: *const fn (p: *Proxy, m: *Message, gpa: mem.Allocator) Error!void,
-
     destroy: *const fn (p: *Proxy, gpa: mem.Allocator) void,
 };
 
@@ -43,3 +42,6 @@ pub fn destroy(p: *Proxy, gpa: mem.Allocator) void {
 pub fn handleSignal(p: *Proxy, m: *Message, gpa: mem.Allocator) Error!void {
     return p.vtable.handle_signal(p, m, gpa);
 }
+
+pub fn noopSignalHandler(_: *Proxy, _: *Message, _: mem.Allocator) Error!void {}
+pub fn noopDestroy(_: *Proxy, _: mem.Allocator) void {}
