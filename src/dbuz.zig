@@ -12,6 +12,7 @@ pub const types = struct {
 
     pub const Method = @import("types/dbus_types.zig").Method;
     pub const Property = @import("types/dbus_types.zig").Property;
+    pub const PropertyStorage = @import("types/dbus_types.zig").PropertiesStorage;
     pub const Signal = @import("types/dbus_types.zig").Signal;
     pub const SignalManager = @import("types/dbus_types.zig").SignalManager;
 
@@ -22,6 +23,12 @@ pub const types = struct {
 
 pub const proxies = struct {
     pub const DBus = @import("proxies/DBus.zig");
+    pub const Properties = @import("proxies/properties.zig").Properties;
+};
+
+pub const utils = struct {
+    pub const dupeValue = @import("types/dbus_types.zig").dupeValue;
+    pub const deinitValue = @import("types/dbus_types.zig").deinitValueRecursive;
 };
 
 pub const codec = @import("codec.zig");
@@ -42,9 +49,9 @@ pub fn spawnLooperThread(gpa: std.mem.Allocator, c: *types.Connection, exit_cond
 fn looper(gpa: std.mem.Allocator, c: *types.Connection, exit_condition: *bool) void {
     logger.debug("Looper started", .{});
     while (!exit_condition.*) {
-        const m_a = c.advance(gpa) catch |err| return logger.debug("Looper: unable to advance connection: {s}", .{@errorName(err)});
+        const m_a = c.advance(gpa) catch |err| return logger.err("Looper: unable to advance connection: {s}", .{@errorName(err)});
         if (m_a) |ma| {
-            c.handleMessage(ma) catch |err| return logger.debug("Looper: unable to handle message: {s}", .{@errorName(err)});
+            c.handleMessage(ma) catch |err| return logger.err("Looper: unable to handle message: {s}", .{@errorName(err)});
         }
     }
     logger.debug("Looper ended", .{});
