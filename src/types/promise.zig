@@ -19,7 +19,7 @@ const State = enum {
 
 pub const ErrorData = struct {
     message: ?[]const u8,
-    error_code: error{Failed},
+    error_code: error{Failed, Disconnected},
 };
 
 /// Create message response wrapper with expected return type T. Even if this type promises you to return T, it will return tuple of Promise(T).Value and *ArenaAllocator from .wait, to handle cases when error is arrived.
@@ -64,6 +64,7 @@ pub fn Promise(comptime T: type) type {
         interface: PromiseOpaque = .{
             .vtable = &.{
                 .received = &received,
+                .errored = &errored,
                 .timedout = &timedout,
                 .reference = &vtable_reference,
                 .release = &vtable_release,
@@ -217,6 +218,24 @@ pub fn Promise(comptime T: type) type {
             p.condition.broadcast();
         }
 
+        pub fn errored(po: *PromiseOpaque, err: ErrorData) void {
+            const p: *@This() = @fieldParentPtr("interface", po);
+
+            p.mutex.lock();
+            defer p.mutex.unlock();
+            
+            switch (p.state) {
+                .Pending => {
+                    p.result = .{
+                        .@"error" = err,
+                    };
+                    p.state = .Completed;
+                    p.condition.broadcast();
+                },
+                else => {}
+            }
+        }
+
         pub fn timedout(po: *PromiseOpaque) void {
 
             const p: *@This() = @fieldParentPtr("interface", po);
@@ -261,6 +280,7 @@ pub fn Promise(comptime T: type) type {
 pub const PromiseOpaque = struct {
     pub const VTable = struct {
         received: *const fn (po: *PromiseOpaque, m: Message, arena: *std.heap.ArenaAllocator) void,
+        errored:  *const fn (po: *PromiseOpaque, err: ErrorData) void,
         timedout: *const fn (po: *PromiseOpaque) void,
 
         reference: *const fn (po: *PromiseOpaque) *PromiseOpaque,

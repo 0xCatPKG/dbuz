@@ -81,6 +81,13 @@ dbus: dbuz.proxies.DBus = undefined,
 /// DBus unique name. null before call to hello(Async);
 unique_name: ?[]const u8 = null,
 
+state: enum {
+    Connected,
+    Disconnected,
+},
+
+refcounter: atomic.Value(usize),
+
 /// Create new instance of connection, allocating new Connection on heap using passed allocator.
 /// Takes ownership of passed handle. If function returns an error, handle is guaranteed to be valid.
 pub fn init(allocator: mem.Allocator, handle: posix.fd_t) !*Connection {
@@ -106,6 +113,8 @@ pub fn init(allocator: mem.Allocator, handle: posix.fd_t) !*Connection {
         },
         .pending_message = null,
         .pending_arena = null,
+        .state = .Connected,
+        .refcounter = .init(1),
     };
     logger.debug("Created {*} for fd:{}", .{c, handle});
     return c;
@@ -116,11 +125,41 @@ pub fn exportFileDescriptor(self: *const Connection) i32 {
     return self.handle;
 }
 
+pub fn reference(c: *Connection) *Connection {
+    _ = c.refcounter.fetchAdd(1, .seq_cst);
+    return c;
+}
+
+pub fn release(c: *Connection) usize {
+    return c.refcounter.fetchSub(1, .seq_cst);
+}
+
+pub fn disconnect(c: *Connection, reason: ?[]const u8) void {
+    if (c.state == .Disconnected) unreachable;
+    posix.shutdown(c.handle, .both) catch {};
+
+    c.tracker_lock.lock();
+    defer c.tracker_lock.unlock();
+
+    var it = c.tracker.iterator();
+    while (it.next()) |kv| {
+        const promise = kv.value_ptr.*;
+        promise.vtable.errored(promise, .{
+            .message = reason,
+            .error_code = error.Disconnected,
+        });
+        if (promise.vtable.release(promise) == 1) promise.vtable.destroy(promise);
+    }
+}
+
 /// Advances current connection internal state. Returns null if message is still in reading phase, returns tuple of Message, *ArenaAllocator when message is ready.
 /// ArenaAllocator is initialized by passed allocator (or default one if null is passed). All Message's internal allocations are made using returned ArenaAllocator.
 /// Caller owns returned memory. Caller MUST call Message.deinit() when all operations on message is ended, as ArenaAllocator.deinit() not closes associated file descriptors.
 pub fn advance(self: *Connection, allocator: ?mem.Allocator) !?struct {Message, *std.heap.ArenaAllocator} {
     logger.debug("Advancing connection...", .{});
+
+    if (self.state == .Disconnected) return error.Disconnected;
+
     const r = &self.reader.interface;
     const alloc = if (allocator) |a| a else self.default_allocator;
     const msg: *Message = if (self.pending_message) |*pm| @constCast(pm) else blk: {
