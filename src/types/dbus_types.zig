@@ -903,4 +903,49 @@ pub fn dupeValue(gpa: std.mem.Allocator, v: anytype) !@TypeOf(v) {
     };
 }
 
+pub fn Variant(comptime types: []const type) type {
+    var variant_enum_fields: []const BuiltinType.EnumField = &.{};
+    var variant_union_fields: []const BuiltinType.UnionField = &.{};
+    var added_signatures: []const []const u8 = &.{};
+
+    for (types) |T| {
+        if (!isTypeSerializable(T)) @compileError(std.fmt.comptimePrint("Type {s} is not DBus-serializable.", .{T}));
+        const signature = guessSignature(T);
+
+        if (sliceContains([]const u8, added_signatures, signature)) continue;
+
+        variant_enum_fields = variant_enum_fields ++ .{
+            BuiltinType.EnumField{
+                .name = signature,
+                .value = variant_enum_fields.len,
+            }
+        };
+        variant_union_fields = variant_union_fields ++ .{
+            BuiltinType.UnionField{
+                .name = signature,
+                .type = T,
+                .alignment = @alignOf(T),
+            }
+        };
+        added_signatures = added_signatures ++ .{ signature };
+    }
+
+    const TypeEnum = @Type(.{
+        .@"enum" = .{
+            .fields = variant_enum_fields,
+            .decls = &.{},
+            .is_exhaustive = true,
+            .tag_type = u32,
+        }
+    });
+    return @Type(.{
+        .@"union" = .{
+            .decls = &.{},
+            .fields = variant_union_fields,
+            .tag_type = TypeEnum,
+            .layout = .auto,
+        }
+    });
+}
+
 const BuiltinType = std.builtin.Type;

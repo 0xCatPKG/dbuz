@@ -19,6 +19,7 @@ pub const types = struct {
     pub const MatchRule = @import("types/MatchRule.zig");
 
     pub const Dict = @import("types/dict.zig").from;
+    pub const Variant = @import("types/dbus_types.zig").Variant;
 };
 
 pub const proxies = struct {
