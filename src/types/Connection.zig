@@ -150,6 +150,8 @@ pub fn disconnect(c: *Connection, reason: ?[]const u8) void {
         });
         if (promise.vtable.release(promise) == 1) promise.vtable.destroy(promise);
     }
+    c.tracker.deinit(c.default_allocator);
+    c.tracker = .empty;
 }
 
 /// Advances current connection internal state. Returns null if message is still in reading phase, returns tuple of Message, *ArenaAllocator when message is ready.
@@ -303,8 +305,6 @@ pub fn trackResponse(c: *Connection, message: Message, comptime T: type) !*Promi
     if (entry.found_existing) return error.DuplicateSerial;
     entry.value_ptr.* = &promise.interface;
 
-    std.debug.print("Started tracking reply to message {}\n", .{message.serial});
-
     return promise.reference();
 }
 
@@ -421,7 +421,6 @@ pub fn handleMessage(c: *Connection, m_a: struct {Message, *std.heap.ArenaAlloca
             // Reply without reply_serial is protocol violation, so we silently drop it.
             if (message.fields.reply_serial == null) return;
 
-            std.debug.print("Received response to message serial {} in message with serial {}\n", .{message.fields.reply_serial.?, message.serial});
 
             c.tracker_lock.lock();
             const entry = c.tracker.fetchSwapRemove(message.fields.reply_serial.?);

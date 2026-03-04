@@ -27,6 +27,7 @@ pub const ErrorData = struct {
 pub fn Promise(comptime T: type) type {
     if (T != Message and !isTypeSerializable(T) and T != void) @compileError(std.fmt.comptimePrint("Unable to construct promise type from {s}: T must be Message or be DBus-serializable type", .{@typeName(T)}));
     return struct {
+        pub const Type = T;
         pub const Storage = union (enum) {
             response: T,
             @"error": ErrorData,

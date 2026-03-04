@@ -39,7 +39,6 @@ pub const Reader = struct {
     }
 
     fn readVec(io_reader: *Io.Reader, data: [][]u8) Io.Reader.Error!usize {
-        // std.debug.print("Reader.readVec\n", .{});
         const r: *Reader = @alignCast(@fieldParentPtr("interface", io_reader));
         if (posixe.has_recvmsg) {
             var iovecs: [8]posix.iovec = undefined;
@@ -57,16 +56,16 @@ pub const Reader = struct {
                 .flags = 0
             };
 
-            const n = posixe.recvmsg(r.handle, &message_header, 0);
+            const n: isize = @bitCast(posixe.recvmsg(r.handle, &message_header, 0));
 
             if (n < 0) return error.ReadFailed;
             if (n == 0) return error.EndOfStream;
             r.control_used = message_header.controllen > 0;
             if (n > data_size) {
-                io_reader.end += n - data_size;
+                io_reader.end += @as(usize, @bitCast(n)) - data_size;
                 return data_size;
             }
-            return n;
+            return @bitCast(n);
         }
         @compileError("Target platform don't supported yet");
     }

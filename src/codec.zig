@@ -138,7 +138,7 @@ pub const Writer = struct {
                             self.position += container_buffer.len;
                         } else if (comptime types.isFileHandle(T)) {
                             if (self.fdlist == null) return error.UnixFDPassingNotSupported;
-                            const index = mem.indexOf(i32, self.fdlist.?.items, in.handle) orelse blk: {
+                            const index = mem.indexOf(i32, self.fdlist.?.items, &.{in.handle}) orelse blk: {
                                 self.fdlist.?.appendBounded(in.handle) catch return error.TooManyFDs;
                                 break :blk self.fdlist.?.items.len - 1;
                             };

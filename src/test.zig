@@ -2,7 +2,7 @@ const std = @import("std");
 const testing = std.testing;
 const net = std.net;
 
-const dbuz = @import("dbuz.zig");
+const dbuz = @import("dbuz");
 const transport = dbuz.transport;
 const sasl = dbuz.auth;
 const Message = dbuz.types.Message;
@@ -18,11 +18,10 @@ test "DBus Hello" {
     const conn = try dbuz.connect(allocator, .Session);
     defer conn.deinit();
 
-    var cond: bool = false;
-    const looper_thread = try dbuz.spawnLooperThread(testing.allocator, conn, &cond);
+    const looper_thread = try dbuz.spawnLooperThread(testing.allocator, conn);
 
     try conn.hello();
-    cond = true;
+    conn.disconnect(null);
 
     looper_thread.join();
 }
@@ -66,8 +65,7 @@ test "homemade proxy" {
     const conn = try dbuz.connect(alloc, .Session);
     defer conn.deinit();
 
-    var exit_cond: bool = false;
-    const looper_thread = try dbuz.spawnLooperThread(alloc, conn, &exit_cond);
+    const looper_thread = try dbuz.spawnLooperThread(alloc, conn);
 
     try conn.hello();
 
@@ -133,7 +131,7 @@ test "homemade proxy" {
     for (proxy.properties.listOfEffects) |effect| {
         std.debug.print("Listed Effect: {s}\n", .{effect.value});
     }
-    exit_cond = true;
+    conn.disconnect(null);
 
     Proxy.deinit(&proxy.interface, alloc);
 

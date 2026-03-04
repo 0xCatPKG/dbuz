@@ -20,6 +20,21 @@ pub const types = struct {
 
     pub const Dict = @import("types/dict.zig").from;
     pub const Variant = @import("types/dbus_types.zig").Variant;
+    pub const DefaultVariant = Variant(&.{
+        u8,
+        u16,
+        u32,
+        u64,
+        i16,
+        i32,
+        i64,
+        f64,
+        std.fs.File,
+        []const u8,
+        String,
+        Signature,
+        ObjectPath,
+    });
 };
 
 pub const proxies = struct {
@@ -37,24 +52,46 @@ pub const auth = @import("sasl.zig");
 pub const transport = @import("transport.zig");
 
 const std = @import("std");
+const posix = std.posix;
+const linux = std.os.linux;
 const Thread = std.Thread;
 
 const logger = std.log.scoped(.dbuz);
 
 /// Spawns looper thread that automatically handles incoming messages. Not recommended for production purposes.
 /// If you want dispatch message, implement your own looper based on Connection.exportFileDescriptor, Connection.advance and Connection.handleMessage.
-pub fn spawnLooperThread(gpa: std.mem.Allocator, c: *types.Connection, exit_condition: *bool) !Thread {
-    return Thread.spawn(.{ .allocator = gpa, }, looper, .{gpa, c, exit_condition});
+pub fn spawnLooperThread(gpa: std.mem.Allocator, c: *types.Connection) !Thread {
+    _ = c.reference();
+    errdefer if (c.release() == 1) c.deinit();
+    return Thread.spawn(.{ .allocator = gpa, }, looper, .{gpa, c});
 }
 
-fn looper(gpa: std.mem.Allocator, c: *types.Connection, exit_condition: *bool) void {
+fn looper(_: std.mem.Allocator, c: *types.Connection) !void {
+    defer if (c.release() == 1) c.deinit();
     logger.debug("Looper started", .{});
-    while (!exit_condition.*) {
-        const m_a = c.advance(gpa) catch |err| return logger.err("Looper: unable to advance connection: {s}", .{@errorName(err)});
-        if (m_a) |ma| {
-            c.handleMessage(ma) catch |err| return logger.err("Looper: unable to handle message: {s}", .{@errorName(err)});
+    const fd = c.exportFileDescriptor();
+    const flags = try posix.fcntl(fd, posix.F.GETFL, 0) | posix.SOCK.NONBLOCK;
+    _ = try posix.fcntl(fd, posix.F.SETFL, flags);
+
+    const epollfd = try posix.epoll_create1(0);
+    var ev = linux.epoll_event{ .events = linux.EPOLL.IN, .data = .{ .fd = fd } };
+    try posix.epoll_ctl(epollfd, linux.EPOLL.CTL_ADD, fd, &ev);
+
+    var events: [1]linux.epoll_event = undefined;
+
+    loop: while (true) {
+        const ready_cnt = posix.epoll_wait(epollfd, &events, 1);
+        for (events[0..ready_cnt]) |_| {
+            // if (event.events & linux.EPOLL.HUP != 0) break :loop;
+            const m_a = c.advance(null) catch |err| switch (err) {
+                error.ReadFailed => continue,
+                error.EndOfStream => break: loop,
+                else => return err,
+            };
+            if (m_a) |ma| try c.handleMessage(ma);
         }
     }
+
     logger.debug("Looper ended", .{});
 }
 

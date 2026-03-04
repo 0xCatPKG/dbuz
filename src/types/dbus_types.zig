@@ -156,7 +156,7 @@ pub inline fn guessSignature(T: type) [:0]const u8 {
                 },
                 .bool => break :blk signature ++ "b",
                 .pointer => |ptrinfo| {
-                    if (ptrinfo.size == .slice) break :blk signature ++ "a" ++ guessSignature(ptrinfo.child) else @compileError("Only slice-type pointers are supported, but get pointer of size " ++ @tagName(ptrinfo.size));
+                    if (ptrinfo.size == .slice) break :blk signature ++ "a" ++ comptime guessSignature(ptrinfo.child) else @compileError("Only slice-type pointers are supported, but get pointer of size " ++ @tagName(ptrinfo.size));
                 },
                 .@"struct" => |structinfo| {
                     if (isDict(T)) break :blk signature ++ dictSignature(T);
@@ -622,9 +622,8 @@ inline fn sliceContains(comptime T: type, haystack: []const T, needle: T) bool {
             .pointer => |ptr| {
                 if (ptr.size == .slice) if (std.mem.eql(ptr.child, el, needle)) return true;
             },
-            else => {}
+            else => if (el == needle) return true,
         }
-        if (el == needle) return true;
     }
     return false;
 }
@@ -904,6 +903,7 @@ pub fn dupeValue(gpa: std.mem.Allocator, v: anytype) !@TypeOf(v) {
 }
 
 pub fn Variant(comptime types: []const type) type {
+    @setEvalBranchQuota(10000);
     var variant_enum_fields: []const BuiltinType.EnumField = &.{};
     var variant_union_fields: []const BuiltinType.UnionField = &.{};
     var added_signatures: []const []const u8 = &.{};
