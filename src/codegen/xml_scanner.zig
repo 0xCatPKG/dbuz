@@ -75,6 +75,7 @@ pub fn main() !void {
         \\properties_manager: dbuz.proxies.Properties(Properties, PropertyUnion, PropertyNames) = undefined,
         \\signals: dbuz.types.SignalManager(Signals),
         \\remote: []const u8,
+        \\signals_listener_registration_id: usize = undefined,
         \\
         \\
         , .{
@@ -184,8 +185,17 @@ pub fn main() !void {
 
     try writer.print(
         \\pub fn destroy(i: *dbuz.types.Proxy, gpa: std.mem.Allocator) void {{
-        \\    _ = i;
-        \\    _ = gpa;
+        \\    const p: *{s} = @alignCast(@ptrCast(i));
+        \\
+        \\    if (!p.properties._inited) return;
+        \\    p.properties._mutex.lock();
+        \\    defer p.properties._mutex.unlock();
+        \\
+        \\    const st_info = @typeInfo(Properties).@"struct";
+        \\    inline for (st_info.fields) |field| {{
+        \\        if (comptime std.mem.startsWith(u8, field.name, "_")) comptime continue;
+        \\        dbuz.utils.deinitValue(gpa, @field(p.properties, field.name));
+        \\    }}
         \\}}
         \\
         \\
@@ -265,7 +275,36 @@ pub fn main() !void {
         }
         try writer.print("}}, .{{}});\n", .{});
     }
+
     try writer.print("}};\n\n", .{});
+    try writer.print(
+        \\pub fn bind(
+        \\    p: *{s},
+        \\    gpa: std.mem.Allocator,
+        \\    c: *dbuz.types.Connection,
+        \\    remote: []const,
+        \\    object_path: []const u8,
+        \\    listener: @FieldType({s}, "signals").Listener
+        \\) !void {{
+        \\    p.interface.connection = c;
+        \\    p.interface.object_path = object_path;
+        \\    try p.properties_manager.bind(c, remote, &p.properties, gpa);
+        \\    p.remote = remote;
+        \\
+        \\    const lp = try c.registerListenerAsync(
+        \\        p,
+        \\        .{{
+        \\            .interface = interface_name,
+        \\            .path = object_path,
+        \\            .sender = remote,
+        \\        }},
+        \\        &p.signals_listener_registration_id,
+        \\        gpa
+        \\    );
+        \\    defer if (lp.release() == 1) lp.deinit();
+        \\}}
+        \\
+    );
 
     const outfile = try fs.createFileAbsolute(dest.?, .{});
     defer outfile.close();
