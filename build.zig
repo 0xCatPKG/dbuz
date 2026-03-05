@@ -16,6 +16,15 @@ pub fn build(b: *Build) void {
         .target = target,
     });
 
+    const proxy_scanner_exe = b.addExecutable(.{
+        .name = "proxy-host-scanner",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/codegen/xml_scanner.zig"),
+            .target = b.resolveTargetQuery(.{}),
+        }),
+    });
+    if (b.lazyDependency("xml", .{})) |xml_dep| proxy_scanner_exe.root_module.addImport("xml", xml_dep.module("dishwasher"));
+
     const tests = b.addTest(.{ .root_module = b.createModule(.{
             .root_source_file = b.path("src/test.zig"),
             .optimize = optimize,
@@ -37,7 +46,6 @@ pub fn build(b: *Build) void {
         })
     });
 
-
     const run_check = b.addRunArtifact(check_test);
 
     const check = b.step("check", "Step for ZLS checks");
@@ -52,23 +60,14 @@ pub const ProxyScanner = struct {
 
     scanner_exe: *Build.Step.Compile,
 
-    pub fn create(b: *Build, dbuz: *Build.Module) *ProxyScanner {
+    pub fn create(b: *Build, dbuz: *Build.Dependency) *ProxyScanner {
         const self = b.allocator.create(ProxyScanner) catch @panic("OOM");
         self.* = .{
             .b = b,
-            .dbuz = dbuz,
-            .scanner_exe = b.addExecutable(.{
-                .name = "proxy-scanner",
-                .root_module = b.createModule(.{
-                    .root_source_file = b.path("src/codegen/xml_scanner.zig"),
-                    .target = b.resolveTargetQuery(.{}),
-                })
-            })
+            .dbuz = dbuz.module("dbuz"),
+            .scanner_exe = dbuz.artifact("proxy-host-scanner"),
         };
 
-        if (b.lazyDependency("xml", .{})) |xml| {
-            self.scanner_exe.root_module.addImport("xml", xml.module("dishwasher"));
-        }
 
         return self;
     }
