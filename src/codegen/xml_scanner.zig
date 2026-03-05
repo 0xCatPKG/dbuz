@@ -301,7 +301,7 @@ pub fn main() !void {
         \\        &p.signals_listener_registration_id,
         \\        gpa
         \\    );
-        \\    defer if (lp.release() == 1) lp.deinit();
+        \\    defer if (lp.release() == 1) lp.destroy();
         \\    p.signals = .init(listener);
         \\}}
         \\
