@@ -302,7 +302,7 @@ pub fn main() !void {
         \\        gpa
         \\    );
         \\    defer if (lp.release() == 1) lp.deinit();
-        \\    p.signals.init(listener);
+        \\    p.signals = .init(listener);
         \\}}
         \\
         \\fn signal_handler(i: *dbuz.types.Proxy, m: *dbuz.types.Message, gpa: std.mem.Allocator) error{{OutOfMemory,HandlingFailed}}!void {{
