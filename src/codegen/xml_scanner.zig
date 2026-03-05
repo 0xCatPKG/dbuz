@@ -185,7 +185,7 @@ pub fn main() !void {
 
     try writer.print(
         \\pub fn destroy(i: *dbuz.types.Proxy, gpa: std.mem.Allocator) void {{
-        \\    const p: *{s} = @alignCast(@ptrCast(@fieldParentPtr("interface", i));
+        \\    const p: *{s} = @alignCast(@ptrCast(@fieldParentPtr("interface", i)));
         \\
         \\    if (!p.properties._inited) return;
         \\    p.properties._mutex.lock();
