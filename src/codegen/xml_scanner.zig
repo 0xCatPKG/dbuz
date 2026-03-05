@@ -311,7 +311,7 @@ pub fn main() !void {
         \\}}
         \\
         \\
-        , .{passed_name.?, passed_name.?});
+        , .{passed_name.?, passed_name.?, passed_name.?});
 
     const outfile = try fs.createFileAbsolute(dest.?, .{});
     defer outfile.close();
