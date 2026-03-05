@@ -305,7 +305,7 @@ pub fn main() !void {
         \\    p.signals.init(listener);
         \\}}
         \\
-        \\fn signal_handler(i: *dbuz.types.Proxy, m: *dbuz.types.Message, gpa: std.mem.Allocator) error{OutOfMemory,HandlingFailed}!void {{
+        \\fn signal_handler(i: *dbuz.types.Proxy, m: *dbuz.types.Message, gpa: std.mem.Allocator) error{{OutOfMemory,HandlingFailed}}!void {{
         \\    const p: *{s} = @alignCast(@ptrCast(@fieldParentPtr("interface", i)));
         \\    return p.signals.handle(m, gpa) catch error.HandlingFailed;
         \\}}
