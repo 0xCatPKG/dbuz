@@ -16,14 +16,11 @@ pub fn build(b: *Build) void {
         .target = target,
     });
 
-    const proxy_scanner_exe = b.addExecutable(.{
-        .name = "proxy-host-scanner",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/codegen/xml_scanner.zig"),
-            .target = b.resolveTargetQuery(.{}),
-        }),
+    const proxy_scanner_mod = b.addModule("proxy-host-scanner", .{
+        .root_source_file = b.path("src/codegen/xml_scanner.zig"),
+        .target = b.resolveTargetQuery(.{}),
     });
-    if (b.lazyDependency("xml", .{})) |xml_dep| proxy_scanner_exe.root_module.addImport("xml", xml_dep.module("dishwasher"));
+    if (b.lazyDependency("xml", .{})) |xml_dep| proxy_scanner_mod.addImport("xml", xml_dep.module("dishwasher"));
 
     const tests = b.addTest(.{ .root_module = b.createModule(.{
             .root_source_file = b.path("src/test.zig"),
@@ -65,9 +62,8 @@ pub const ProxyScanner = struct {
         self.* = .{
             .b = b,
             .dbuz = dbuz.module("dbuz"),
-            .scanner_exe = dbuz.artifact("proxy-host-scanner"),
+            .scanner_exe = b.addExecutable(.{ .root_module = dbuz.module("proxy-host-scanner")}),
         };
-
 
         return self;
     }
