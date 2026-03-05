@@ -62,7 +62,7 @@ pub const ProxyScanner = struct {
         self.* = .{
             .b = b,
             .dbuz = dbuz.module("dbuz"),
-            .scanner_exe = b.addExecutable(.{ .root_module = dbuz.module("proxy-host-scanner")}),
+            .scanner_exe = b.addExecutable(.{ .name = "proxy-scanner", .root_module = dbuz.module("proxy-host-scanner")}),
         };
 
         return self;
