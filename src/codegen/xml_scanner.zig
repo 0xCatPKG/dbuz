@@ -288,7 +288,7 @@ pub fn main() !void {
         \\) !void {{
         \\    p.interface.connection = c;
         \\    p.interface.object_path = object_path;
-        \\    try p.properties_manager.bind(c, remote, &p.properties, gpa);
+        \\    try p.properties_manager.bind(c, remote, interface_name, object_path, &p.properties, gpa);
         \\    p.remote = remote;
         \\
         \\    const lp = try c.registerListenerAsync(
