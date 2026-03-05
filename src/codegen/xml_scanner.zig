@@ -282,7 +282,7 @@ pub fn main() !void {
         \\    p: *{s},
         \\    gpa: std.mem.Allocator,
         \\    c: *dbuz.types.Connection,
-        \\    remote: []const,
+        \\    remote: []const u8,
         \\    object_path: []const u8,
         \\    listener: @FieldType({s}, "signals").Listener
         \\) !void {{
