@@ -185,7 +185,7 @@ pub fn main() !void {
 
     try writer.print(
         \\pub fn destroy(i: *dbuz.types.Proxy, gpa: std.mem.Allocator) void {{
-        \\    const p: *{s} = @alignCast(@ptrCast(i));
+        \\    const p: *{s} = @alignCast(@ptrCast(@fieldParentPtr("interface", i));
         \\
         \\    if (!p.properties._inited) return;
         \\    p.properties._mutex.lock();
@@ -199,7 +199,7 @@ pub fn main() !void {
         \\}}
         \\
         \\
-        , .{}
+        , .{passed_name.?}
     );
 
     try writer.print(
@@ -302,9 +302,16 @@ pub fn main() !void {
         \\        gpa
         \\    );
         \\    defer if (lp.release() == 1) lp.deinit();
+        \\    p.signals.init(listener);
         \\}}
         \\
-    );
+        \\fn signal_handler(i: *dbuz.types.Proxy, m: *dbuz.types.Message, gpa: std.mem.Allocator) error{OutOfMemory,HandlingFailed}!void {{
+        \\    const p: *{s} = @alignCast(@ptrCast(@fieldParentPtr("interface", i)));
+        \\    return p.signals.handle(m, gpa) catch error.HandlingFailed;
+        \\}}
+        \\
+        \\
+        , .{passed_name.?, passed_name.?});
 
     const outfile = try fs.createFileAbsolute(dest.?, .{});
     defer outfile.close();
