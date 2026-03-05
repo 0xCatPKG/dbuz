@@ -40,6 +40,7 @@ pub const types = struct {
 pub const proxies = struct {
     pub const DBus = @import("proxies/DBus.zig");
     pub const Properties = @import("proxies/properties.zig").Properties;
+    pub const Introspectable = @import("proxies/Introspectable.zig");
 };
 
 pub const utils = struct {

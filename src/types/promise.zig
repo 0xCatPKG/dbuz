@@ -18,8 +18,14 @@ const State = enum {
 };
 
 pub const ErrorData = struct {
+
+    pub const Error = error{
+        Failed,
+        Disconnected
+    };
+
     message: ?[]const u8,
-    error_code: error{Failed, Disconnected},
+    error_code: Error,
 };
 
 /// Create message response wrapper with expected return type T. Even if this type promises you to return T, it will return tuple of Promise(T).Value and *ArenaAllocator from .wait, to handle cases when error is arrived.

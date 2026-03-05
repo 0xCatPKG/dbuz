@@ -10,17 +10,23 @@ pub fn build(b: *Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const dishwasher_dep = b.dependency("dishwasher", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
     const dbuz_mod = b.addModule("dbuz", .{
         .root_source_file = b.path("src/dbuz.zig"),
         .optimize = optimize,
         .target = target,
+        .imports = &.{ .{ .name = "dishwasher", .module = dishwasher_dep.module("dishwasher") } },
     });
 
     const proxy_scanner_mod = b.addModule("proxy-host-scanner", .{
         .root_source_file = b.path("src/codegen/xml_scanner.zig"),
         .target = b.resolveTargetQuery(.{}),
     });
-    if (b.lazyDependency("xml", .{})) |xml_dep| proxy_scanner_mod.addImport("xml", xml_dep.module("dishwasher"));
+    if (b.lazyDependency("dishwasher", .{})) |xml_dep| proxy_scanner_mod.addImport("dishwasher", xml_dep.module("dishwasher"));
 
     const tests = b.addTest(.{ .root_module = b.createModule(.{
             .root_source_file = b.path("src/test.zig"),

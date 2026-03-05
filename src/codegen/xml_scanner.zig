@@ -1,5 +1,5 @@
 const std = @import("std");
-const xml = @import("xml");
+const xml = @import("dishwasher");
 
 const Io = std.Io;
 const fs = std.fs;
