@@ -134,7 +134,7 @@ pub fn main() !void {
         } else try writer.print("void", .{});
 
         try writer.print(
-            \\) {{
+            \\, dbuz.types.DBusError) {{
             \\    if (p.interface.connection == null) return error.Unbound;
             \\    var request = try p.interface.connection.?.startMessage(gpa);
             \\    defer request.deinit();
@@ -170,7 +170,8 @@ pub fn main() !void {
 
         try writer.print(
             \\    const promise = try p.interface.connection.?.trackResponse(request,
-            \\          @typeInfo(@typeInfo(@typeInfo( @TypeOf({s}) ).@"fn".return_type.?).error_union.payload).pointer.child.Type);
+            \\          @typeInfo(@typeInfo(@typeInfo( @TypeOf({s}) ).@"fn".return_type.?).error_union.payload).pointer.child.Type,
+            \\          dbuz.types.DBusError);
             \\    errdefer if (promise.release() == 1) promise.destroy();
             \\
             \\    try p.interface.connection.?.sendMessage(&request);

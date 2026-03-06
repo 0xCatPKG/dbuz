@@ -84,25 +84,30 @@ pub fn Properties(comptime PropertiesStorage: type, comptime TypeUnion: type, co
             var w = get_all_call.writer();
             try w.write(String{ .value = interface });
 
-            const promise = try c.trackResponse(get_all_call, Dict(String, PropertiesUnion));
+            const promise = try c.trackResponse(get_all_call, Dict(String, PropertiesUnion), DBusError);
             defer if (promise.release() == 1) promise.destroy();
 
-            promise.setupCallbacks(.{
-                .response = &get_all_response,
-                .@"error" = &get_all_failed,
-                .timeout = null
-            }, s);
-
+            promise.setupCallback(&get_all_cb, s);
             try c.sendMessage(&get_all_call);
         }
 
-        fn get_all_response(
-            _: *Promise(Dict(String, PropertiesUnion)),
-            response: Dict(String, PropertiesUnion),
-            _: *std.heap.ArenaAllocator,
-            userdata: ?*anyopaque,
+        fn get_all_cb(
+            _: *Promise(Dict(String, PropertiesUnion), DBusError),
+            value: DBusError!Dict(String, PropertiesUnion),
+            _: ?*std.heap.ArenaAllocator,
+            userdata: ?*anyopaque
         ) void {
             const s: *Self = @alignCast(@ptrCast(userdata));
+
+            const response = value catch |err| {
+                logger.err("Properties(remote:{s}, interface:{s}, path:{s}).GetAll returned error: {s}", .{
+                    s.remote,
+                    s.name,
+                    s.path,
+                    @errorName(err)
+                });
+                return;
+            };
 
             s.properties._mutex.lock();
             defer s.properties._mutex.unlock();
@@ -128,27 +133,6 @@ pub fn Properties(comptime PropertiesStorage: type, comptime TypeUnion: type, co
                 }
             }
             s.properties._inited = true;
-        }
-
-        fn get_all_failed(
-            _: *Promise(Dict(String, PropertiesUnion)),
-            err: PromiseError,
-            userdata: ?*anyopaque
-        ) void {
-            const s: *Self = @alignCast(@ptrCast(userdata));
-            logger.err("Properties(remote:{s}, interface:{s}, path:{s}).GetAll returned error: {s}", .{
-                s.remote,
-                s.name,
-                s.path,
-                err.message orelse @errorName(err.error_code)
-            });
-        }
-
-        pub fn get(s: *Self, comptime property: PropertiesEnum) @FieldType(Storage, @tagName(property)) {
-            s.properties._mutex.lock();
-            defer s.properties._mutex.unlock();
-
-            return @field(s.properties.*, @tagName(property));
         }
 
         pub fn set(
@@ -226,6 +210,6 @@ const SignalManager = dbuz.types.SignalManager;
 const Dict = dbuz.types.Dict;
 
 const Promise = dbuz.types.Promise;
-const PromiseError = dbuz.types.PromiseError;
+const DBusError = dbuz.types.DBusError;
 
 const logger = std.log.scoped(.Properties);

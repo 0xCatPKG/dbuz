@@ -88,7 +88,37 @@ pub inline fn isTypeSerializable(comptime T: type) bool {
             break :blk isTypeSerializable(pointerinfo.child);
         },
         .@"struct" => |structinfo| blk: {
-            if (isDict(T)) return guessSignature(T).len != 0;
+            if (std.meta.hasMethod(T, "toDBus")) break :blk true
+            else if (isDict(T)) return guessSignature(T).len != 0;
+            for (structinfo.fields) |field| {
+                if (!isTypeSerializable(field.type)) break :blk false;
+            }
+            break :blk true;
+        },
+        .@"union" => |unioninfo| blk: {
+            if (unioninfo.tag_type == null) break :blk false;
+            for (unioninfo.fields) |field| {
+                if (!isTypeSerializable(field.type)) break :blk false;
+            }
+            break :blk true;
+        },
+        .@"enum" => |enuminfo| isTypeSerializable(enuminfo.tag_type),
+    };
+}
+pub inline fn isTypeDeserializable(comptime T: type) bool {
+    const typeinfo = @typeInfo(T);
+    return switch (typeinfo) {
+        else => false,
+        .bool => true,
+        .int => |intinfo| if (intinfo.bits > 64) false else true,
+        .float => |floatinfo| if (floatinfo.bits > 64) false else true,
+        .pointer => |pointerinfo| blk: {
+            if (pointerinfo.size != .slice) break :blk false;
+            break :blk isTypeSerializable(pointerinfo.child);
+        },
+        .@"struct" => |structinfo| blk: {
+            if (std.meta.hasMethod(T, "fromDBus")) break :blk true
+            else if (isDict(T)) return guessSignature(T).len != 0;
             for (structinfo.fields) |field| {
                 if (!isTypeSerializable(field.type)) break :blk false;
             }
@@ -132,7 +162,6 @@ pub fn getSignature(value: anytype) ?[]const u8 {
 pub inline fn guessSignature(T: type) [:0]const u8 {
     comptime var signature: [:0]const u8 = "";
     const typeinfo = @typeInfo(T);
-
     signature = blk: switch (T) {
         String => signature ++ "s",
         ObjectPath => signature ++ "o",
@@ -159,6 +188,7 @@ pub inline fn guessSignature(T: type) [:0]const u8 {
                     if (ptrinfo.size == .slice) break :blk signature ++ "a" ++ comptime guessSignature(ptrinfo.child) else @compileError("Only slice-type pointers are supported, but get pointer of size " ++ @tagName(ptrinfo.size));
                 },
                 .@"struct" => |structinfo| {
+                    if (@hasDecl(T, "dbus_signature")) break :blk signature ++ T.dbus_signature;
                     if (isDict(T)) break :blk signature ++ dictSignature(T);
                     if (isFileHandle(T)) break :blk signature ++ "h";
                     if (!structinfo.is_tuple) signature = signature ++ "(";

@@ -10,6 +10,7 @@ const dbuz = @import("../dbuz.zig");
 const Message = dbuz.types.Message;
 
 const isTypeSerializable = @import("dbus_types.zig").isTypeSerializable;
+const isTypeDeserializable = @import("dbus_types.zig").isTypeDeserializable;
 
 const State = enum {
     Pending,
@@ -17,39 +18,69 @@ const State = enum {
     Invalid,
 };
 
-pub const ErrorData = struct {
+/// https://dbus.freedesktop.org/doc/api/html/group__DBusProtocol.html
+pub const DBusError = error{
+    Failed,
+    OutOfMemory,
+    ServiceUnknown,
+    NameHasNoOwner,
+    NoReply,
+    IOError,
+    BadAddress,
+    NotSupported,
+    LimitsExceeded,
+    AccessDenied,
+    AuthFailed,
+    NoServer,
+    Timeout,
+    NoNetwork,
+    AddressInUse,
+    InvalidArgs,
+    FileNotFound,
+    FileExists,
+    UnknownMethod,
+    UnknownObject,
+    UnknownInterface,
+    UnknownProperty,
+    PropertyReadOnly,
+    TimedOut,
+    MatchRuleNotFound,
+    MatchRuleInvalid,
+    UnixProcessIdUnknown,
+    InvalidSignature,
+    InvalidFileContent,
+    SELinuxSecurityContextUnknown,
+    ObjectPathInUse,
+    InconsistentMessage,
+    InteractiveAuthorizationRequired,
+    NotContainer,
 
-    pub const Error = error{
-        Failed,
-        Disconnected
-    };
-
-    message: ?[]const u8,
-    error_code: Error,
+    Disconnected,
 };
+
+fn errorFromMessage(comptime E: type, message: *const Message) E {
+    const e_info = @typeInfo(E).error_set.?;
+    const namespaced_error = if (message.fields.error_name) |err| err else return DBusError.Failed;
+    var err_iterator = mem.splitBackwardsScalar(u8, namespaced_error, '.');
+
+    const err_name = err_iterator.next().?;
+
+    inline for (e_info) |err| {
+        if (!std.mem.eql(u8, err_name, err.name)) comptime continue;
+        return @field(E, err.name);
+    }
+    return DBusError.Failed;
+}
 
 /// Create message response wrapper with expected return type T. Even if this type promises you to return T, it will return tuple of Promise(T).Value and *ArenaAllocator from .wait, to handle cases when error is arrived.
 /// If passed T is equals to Message, Value's response type will be actually *Message, because reasons. It is possible to setup callbacks on promise, if you don't want block some thread with .wait()
-pub fn Promise(comptime T: type) type {
-    if (T != Message and !isTypeSerializable(T) and T != void) @compileError(std.fmt.comptimePrint("Unable to construct promise type from {s}: T must be Message or be DBus-serializable type", .{@typeName(T)}));
+pub fn Promise(comptime T: type, comptime E: type) type {
+    if (!isTypeDeserializable(T) and T != void) @compileError(std.fmt.comptimePrint("Unable to construct promise type from {s}: T must be void or DBus-serializable type", .{@typeName(T)}));
     return struct {
         pub const Type = T;
-        pub const Storage = union (enum) {
-            response: T,
-            @"error": ErrorData,
+        pub const Error = E;
+        pub const Callback = *const fn (promise: *Self, result: Error!Type, arena: ?*std.heap.ArenaAllocator, userdata: ?*anyopaque) void;
 
-            pub fn toValue(s: *const Storage) Value {
-                if (T != Message) return s.*
-                else return switch (s) {
-                    .response => Value{.response = &s.response},
-                    .@"error" => Value{.@"error" = s.@"error"},
-                };
-            }
-        };
-        pub const Value = if (T == Message) union (enum) {
-            response: *T,
-            @"error": ErrorData,
-        } else Storage;
         const Self = @This();
 
         state: State = .Pending,
@@ -57,14 +88,14 @@ pub fn Promise(comptime T: type) type {
         condition: Thread.Condition = .{},
         mutex: Thread.Mutex = .{},
 
-        result: ?Storage = null,
-        result_arena: ?*std.heap.ArenaAllocator = null,
+        result_value:   ?Error!Type = null,
+        result_arena:   ?*std.heap.ArenaAllocator = null,
+        result_message: ?Message = null,
 
-        callbacks: ?PromiseCallbacks = null,
-        capture: ?*anyopaque = null,
+        callback: ?Callback = null,
+        capture:   ?*anyopaque = null,
 
         refcounter: atomic.Value(isize) = .init(0),
-        deadline_fd: ?posix.fd_t = null,
 
         allocator: mem.Allocator,
 
@@ -78,12 +109,6 @@ pub fn Promise(comptime T: type) type {
                 .destroy = &vtable_destroy,
             },
         },
-
-        pub const PromiseCallbacks = struct {
-            response: *const fn (p: *Self, result: if (T == Message) *T else T, arena: *std.heap.ArenaAllocator, user_data: ?*anyopaque) void,
-            @"error": *const fn (p: *Self, cause: ErrorData, user_data: ?*anyopaque) void,
-            timeout: ?*const fn (p: *Self, user_data: ?*anyopaque) void,
-        };
 
         /// Create Promise(T) using gpa as allocator or fail miserably.
         pub fn create(gpa: mem.Allocator) !*@This() {
@@ -120,12 +145,7 @@ pub fn Promise(comptime T: type) type {
             switch (p.state) {
                 .Completed => {
                     // Usually deinitializing arena is enough, but in case with file descriptors we need to close them manually.
-                    if (p.result) |stored| {
-                        switch (stored.toValue()) {
-                            .response => |r| deinitRecursive(p.result_arena.?.allocator(), r),
-                            .@"error" => {}
-                        }
-                    }
+                    if (p.result_message) |*msg| msg.deinit();
                     if (p.result_arena) |arena| {
                         arena.deinit();
                         arena.child_allocator.destroy(arena);
@@ -147,13 +167,13 @@ pub fn Promise(comptime T: type) type {
         /// Callbacks are guaranteed to fire before this method exits.
         /// 
         /// NOTE: NEVER CALL THIS METHOD FROM INSIDE OF ANOTHER PROMISE'S CALLBACK. THIS WILL CAUSE DEADLOCK.
-        pub fn wait(p: *@This(), timeout_ns: ?u64) !struct {Value, *std.heap.ArenaAllocator} {
+        pub fn wait(p: *@This(), timeout_ns: ?u64) !struct {Error!Type, *std.heap.ArenaAllocator} {
             p.mutex.lock();
             defer p.mutex.unlock();
             state: switch (p.state) {
                 .Completed => {
-                    if (p.result == null) return error.TimedOut;
-                    return .{p.result.?.toValue(), p.result_arena.?};
+                    if (p.result_value == null) return error.TimedOut;
+                    return .{p.result_value.?, p.result_arena.?};
                 },
                 .Pending => {
                     try p.condition.timedWait(&p.mutex, timeout_ns orelse 90 * std.time.ns_per_s);
@@ -166,7 +186,6 @@ pub fn Promise(comptime T: type) type {
 
         /// Takes ownership of message and arena.
         pub fn received(po: *PromiseOpaque, message: Message, arena: *std.heap.ArenaAllocator) void {
-
             const p: *@This() = @fieldParentPtr("interface", po);
 
             p.mutex.lock();
@@ -174,58 +193,25 @@ pub fn Promise(comptime T: type) type {
 
             if (p.state != .Pending) @panic("Message received on non-pending promise! Connection or promise is corrupted.");
             p.result_arena = arena;
-            var m = message;
-            p.result = switch (m.type) {
-                .@"error" => e: {
-                    if (m.fields.signature) |signature| {
-                        if (signature[0] == 's') {
-                            const message_reader = m.reader() catch break :e Storage{.@"error" = .{
-                                .error_code = error.Failed,
-                                .message = "Unable to read error from message: Reader creation failed",
-                            }};
-                            const error_message = message_reader.read(dbuz.types.String, arena.allocator()) catch break :e Storage{.@"error" = .{
-                                .message = "Failed to read error from message: Reading failed",
-                                .error_code = error.Failed,
-                            }};
-                        break :e Storage{.@"error" = .{
-                                .error_code = error.Failed,
-                                .message = error_message.value,
-                            }};
-                        }
-                    } else break :e Storage{.@"error" = .{ .error_code = error.Failed, .message = null }};
-                    unreachable;
-                },
+            p.result_message = message;
+            p.result_value = switch (message.type) {
+                .@"error" => errorFromMessage(Error, &message),
                 .method_response => r: {
-                    if (T == Message) {
-                        break :r Storage{.response = m };
-                    } else {
-                        const message_reader = m.reader() catch break :r Storage{.@"error" = .{
-                            .error_code = error.Failed,
-                            .message = "Unable to read error from message: Reader creation failed",
-                        }};
-                        const values = message_reader.read(T, arena.allocator()) catch break :r Storage{ .@"error" = .{
-                            .error_code = error.Failed,
-                            .message = "Unable to read message: Reading failed",
-                        }};
-                        m.deinit();
-                        break :r Storage{.response = values};
-                    }
+                    const message_reader = p.result_message.?.reader() catch break :r Error.OutOfMemory;
+                    const values = message_reader.read(T, arena.allocator()) catch break :r error.Failed;
+                    break :r values; 
                 },
                 else => unreachable,
             };
 
-            if (p.callbacks) |cbs| {
-                switch (p.result.?) {
-                    .response => |v| cbs.response(p, v, p.result_arena.?, p.capture),
-                    .@"error" => |e| cbs.@"error"(p, e, p.capture),
-                }
-            }
+            if (p.callback) |cb| 
+                cb(p, p.result_value.?, p.result_arena, p.capture);
 
             p.state = .Completed;
             p.condition.broadcast();
         }
 
-        pub fn errored(po: *PromiseOpaque, err: ErrorData) void {
+        pub fn errored(po: *PromiseOpaque, err: DBusError) void {
             const p: *@This() = @fieldParentPtr("interface", po);
 
             p.mutex.lock();
@@ -233,52 +219,44 @@ pub fn Promise(comptime T: type) type {
             
             switch (p.state) {
                 .Pending => {
-                    p.result = .{
-                        .@"error" = err,
-                    };
+                    p.result_value = err;
                     p.state = .Completed;
                     p.condition.broadcast();
                 },
-                else => {}
+                .Completed => {},
+                .Invalid => unreachable,
             }
         }
 
         pub fn timedout(po: *PromiseOpaque) void {
 
-            const p: *@This() = @fieldParentPtr("interface", po);
+            const p: *Self = @fieldParentPtr("interface", po);
 
             p.mutex.lock();
             defer p.mutex.unlock();
 
             if (p.state != .Pending) @panic("Timeout received on non-pending promise! Connection or promise is corrupted.");
-            p.deadline_fd = null;
             p.state = .Completed;
-            
-            if (p.callbacks) |cbs| {
-                if (cbs.timeout) |timeout| timeout(p, p.capture);
-            }
+
+            if (p.callback) |cb|
+                cb(p, error.TimedOut, null, p.capture);
 
             p.condition.broadcast();
         }
 
-        /// Sets timeout for this promise and returns timerfd that will produce event after timeout_ns. You must add that timerfd to
-        /// your event loop and then inform connection about timeout.
-        pub fn setDeadline(p: *@This(), timeout_ns: u64) !posix.fd_t {
-            const timerfd = try posix.timerfd_create(.REALTIME, .{ .NONBLOCK = true, .CLOEXEC = true });
-            errdefer posix.close(timerfd);
+        /// Sets up callbacks for promise. If promise is completed, calls callback immediately 
+        pub fn setupCallback(p: *Self, cb: Callback, userdata: ?*anyopaque) void {
+            p.mutex.lock();
+            defer p.mutex.unlock();
 
-            try posix.timerfd_settime(timerfd, .{}, &posix.system.itimerspec{
-                .it_value = .{ .nsec = timeout_ns, .sec = 0 },
-                .it_interval = .{ .nsec = 0, .sec = 0 },
-            }, null);
-            p.deadline_fd = timerfd;
-            return timerfd;
-        }
+            p.callback = cb;
+            p.capture = userdata;
 
-        /// Sets up callbacks for promise.
-        pub fn setupCallbacks(p: *@This(), cbs: PromiseCallbacks, user_data: ?*anyopaque) void {
-            p.callbacks = cbs;
-            p.capture = user_data;
+            switch (p.state) {
+                .Invalid => unreachable,
+                .Completed => cb(p, p.result_value.?, p.result_arena, p.capture),
+                .Pending => {},
+            }
         }
 
     };
@@ -287,7 +265,7 @@ pub fn Promise(comptime T: type) type {
 pub const PromiseOpaque = struct {
     pub const VTable = struct {
         received: *const fn (po: *PromiseOpaque, m: Message, arena: *std.heap.ArenaAllocator) void,
-        errored:  *const fn (po: *PromiseOpaque, err: ErrorData) void,
+        errored:  *const fn (po: *PromiseOpaque, err: DBusError) void,
         timedout: *const fn (po: *PromiseOpaque) void,
 
         reference: *const fn (po: *PromiseOpaque) *PromiseOpaque,

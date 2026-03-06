@@ -16,9 +16,23 @@ const Promise = dbuz.types.Promise;
 
 const String = dbuz.types.String;
 
+const DBusError = dbuz.types.DBusError;
+const SpawnError = error {
+    ExecFailed,
+    ForkFailed,
+    ChildExited,
+    ChildSignaled,
+    FailedToSetup,
+    ConfigInvalid,
+    ServiceNotValid,
+    ServiceNotFound,
+    PermissionsInvalid,
+    FileInvalid,
+} || DBusError;
+
 pub const interface_name = "org.freedesktop.DBus";
 
-pub fn Hello(c: *Connection) !*Promise(String) {
+pub fn Hello(c: *Connection) !*Promise(String, DBusError) {
     var request = try c.startMessage(null);
     defer request.deinit();
     request.type = .method_call;
@@ -28,7 +42,7 @@ pub fn Hello(c: *Connection) !*Promise(String) {
         .member = "Hello",
         .path = "/org/freedesktop/DBus",
     };
-    const promise = try c.trackResponse(request, String);
+    const promise = try c.trackResponse(request, String, DBusError);
     errdefer if (promise.release() == 1) promise.destroy();
     try c.sendMessage(&request);
     return promise;
@@ -54,7 +68,7 @@ const RequestNameResponse = enum (u32) {
     already_owned = 4,
     _
 };
-pub fn RequestName(i: *const DBus, name: []const u8, flags: RequestNameFlags) !*Promise(RequestNameResponse) {
+pub fn RequestName(i: *const DBus, name: []const u8, flags: RequestNameFlags) !*Promise(RequestNameResponse, DBusError) {
     var request = try i.c.startMessage(null);
     defer request.deinit();
     request.type = .method_call;
@@ -70,7 +84,7 @@ pub fn RequestName(i: *const DBus, name: []const u8, flags: RequestNameFlags) !*
     const w = request.writer();
     try w.write(.{String{.value = name}, flags.toInteger()});
 
-    const promise = try i.c.trackResponse(request, RequestNameResponse);
+    const promise = try i.c.trackResponse(request, RequestNameResponse, DBusError);
     errdefer if (promise.release() == 1) promise.destroy();
 
     try i.c.sendMessage(&request);
@@ -83,7 +97,7 @@ const ReleaseNameResponse = enum (u32) {
     not_owner = 3,
     _
 };
-pub fn ReleaseName(i: *const DBus, name: []const u8) !*Promise(ReleaseNameResponse) {
+pub fn ReleaseName(i: *const DBus, name: []const u8) !*Promise(ReleaseNameResponse, DBusError) {
     var request = try i.c.startMessage(null);
     defer request.deinit();
     request.type = .method_call;
@@ -98,14 +112,14 @@ pub fn ReleaseName(i: *const DBus, name: []const u8) !*Promise(ReleaseNameRespon
     const w = request.writer();
     try w.write(String{.value = name});
     
-    const promise = try i.c.trackResponse(request, ReleaseNameResponse);
+    const promise = try i.c.trackResponse(request, ReleaseNameResponse, DBusError);
     errdefer if (promise.release() == 1) promise.destroy();
 
     try i.c.sendMessage(&request);
     return promise;
 }
 
-pub fn ListQueuedOwners(i: *const DBus, name: []const u8) !*Promise([]String) {
+pub fn ListQueuedOwners(i: *const DBus, name: []const u8) !*Promise([]String, DBusError) {
     var request = try i.c.startMessage(null);
     defer request.deinit();
     request.type = .method_call;
@@ -120,14 +134,14 @@ pub fn ListQueuedOwners(i: *const DBus, name: []const u8) !*Promise([]String) {
     const w = request.writer();
     try w.write(String{.value = name});
     
-    const promise = try i.c.trackResponse(request, []String);
+    const promise = try i.c.trackResponse(request, []String, DBusError);
     errdefer if (promise.release() == 1) promise.destroy();
 
     try i.c.sendMessage(&request);
     return promise;
 }
 
-pub fn ListNames(i: *const DBus) !*Promise([]String) {
+pub fn ListNames(i: *const DBus) !*Promise([]String, DBusError) {
     var request = try i.c.startMessage(null);
     defer request.deinit();
     request.type = .method_call;
@@ -138,14 +152,14 @@ pub fn ListNames(i: *const DBus) !*Promise([]String) {
         .path = "/org/freedesktop/DBus",
     };
     
-    const promise = try i.c.trackResponse(request, []String);
+    const promise = try i.c.trackResponse(request, []String, DBusError);
     errdefer if (promise.release() == 1) promise.destroy();
 
     try i.c.sendMessage(&request);
     return promise;
 }
 
-pub fn ListActivatableNames(i: *const DBus) !*Promise([]String) {
+pub fn ListActivatableNames(i: *const DBus) !*Promise([]String, DBusError) {
     var request = try i.c.startMessage(null);
     defer request.deinit();
     request.type = .method_call;
@@ -156,14 +170,14 @@ pub fn ListActivatableNames(i: *const DBus) !*Promise([]String) {
         .path = "/org/freedesktop/DBus",
     };
     
-    const promise = try i.c.trackResponse(request, []String);
+    const promise = try i.c.trackResponse(request, []String, DBusError);
     errdefer if (promise.release() == 1) promise.destroy();
 
     try i.c.sendMessage(&request);
     return promise;
 }
 
-pub fn NameHasOwner(i: *const DBus, name: []const u8) !*Promise(bool) {
+pub fn NameHasOwner(i: *const DBus, name: []const u8) !*Promise(bool, DBusError) {
     var request = try i.c.startMessage(null);
     defer request.deinit();
     request.type = .method_call;
@@ -178,7 +192,7 @@ pub fn NameHasOwner(i: *const DBus, name: []const u8) !*Promise(bool) {
     const w = request.writer();
     try w.write(String{.value = name});
     
-    const promise = try i.c.trackResponse(request, bool);
+    const promise = try i.c.trackResponse(request, bool, DBusError);
     errdefer if (promise.release() == 1) promise.destroy();
 
     try i.c.sendMessage(&request);
@@ -193,7 +207,7 @@ const StartServiceByNameResponse = enum (u32) {
     already_running = 2,
     _
 };
-pub fn StartServiceByName(i: *const DBus, name: []const u8, flags: StartServiceByNameFlags) !*Promise(StartServiceByNameResponse) {
+pub fn StartServiceByName(i: *const DBus, name: []const u8, flags: StartServiceByNameFlags) !*Promise(StartServiceByNameResponse, DBusError) {
     var request = try i.c.startMessage(null);
     defer request.deinit();
     request.type = .method_call;
@@ -209,7 +223,7 @@ pub fn StartServiceByName(i: *const DBus, name: []const u8, flags: StartServiceB
     const w = request.writer();
     try w.write(.{String{.value = name}, flags.toInteger()});
 
-    const promise = try i.c.trackResponse(request, StartServiceByNameResponse);
+    const promise = try i.c.trackResponse(request, StartServiceByNameResponse, DBusError);
     errdefer if (promise.release() == 1) promise.destroy();
 
     try i.c.sendMessage(&request);
@@ -218,7 +232,7 @@ pub fn StartServiceByName(i: *const DBus, name: []const u8, flags: StartServiceB
 }
 
 const EnvironmentDict = dbuz.types.Dict(String, String);
-pub fn UpdateActivationEnvironment(i: *const DBus, environment: EnvironmentDict) !*Promise(void) {
+pub fn UpdateActivationEnvironment(i: *const DBus, environment: EnvironmentDict) !*Promise(void, DBusError) {
     var request = try i.c.startMessage(null);
     defer request.deinit();
     request.type = .method_call;
@@ -234,14 +248,14 @@ pub fn UpdateActivationEnvironment(i: *const DBus, environment: EnvironmentDict)
     const w = request.writer();
     try w.write(environment);
 
-    const promise = try i.c.trackResponse(request, void);
+    const promise = try i.c.trackResponse(request, void, DBusError);
     errdefer if (promise.release() == 1) promise.destroy();
 
     try i.c.sendMessage(&request);
     return promise;
 }
 
-pub fn GetNameOwner(i: *const DBus, name: []const u8) !*Promise(String) {
+pub fn GetNameOwner(i: *const DBus, name: []const u8) !*Promise(String, DBusError) {
     var request = try i.c.startMessage(null);
     defer request.deinit();
     request.type = .method_call;
@@ -257,14 +271,14 @@ pub fn GetNameOwner(i: *const DBus, name: []const u8) !*Promise(String) {
     const w = request.writer();
     try w.write(String{.value = name});
 
-    const promise = try i.c.trackResponse(request, String);
+    const promise = try i.c.trackResponse(request, String, DBusError);
     errdefer if (promise.release() == 1) promise.destroy();
 
     try i.c.sendMessage(&request);
     return promise;
 }
 
-pub fn GetConnectionUnixUser(i: *const DBus, name: []const u8) !*Promise(u32) {
+pub fn GetConnectionUnixUser(i: *const DBus, name: []const u8) !*Promise(u32, DBusError) {
     var request = try i.c.startMessage(null);
     defer request.deinit();
     request.type = .method_call;
@@ -280,14 +294,14 @@ pub fn GetConnectionUnixUser(i: *const DBus, name: []const u8) !*Promise(u32) {
     const w = request.writer();
     try w.write(String{.value = name});
 
-    const promise = try i.c.trackResponse(request, u32);
+    const promise = try i.c.trackResponse(request, u32, DBusError);
     errdefer if (promise.release() == 1) promise.destroy();
 
     try i.c.sendMessage(&request);
     return promise;
 }
 
-pub fn GetConnectionUnixProcessID(i: *const DBus, name: []const u8) !*Promise(u32) {
+pub fn GetConnectionUnixProcessID(i: *const DBus, name: []const u8) !*Promise(u32, DBusError) {
     var request = try i.c.startMessage(null);
     defer request.deinit();
     request.type = .method_call;
@@ -303,7 +317,7 @@ pub fn GetConnectionUnixProcessID(i: *const DBus, name: []const u8) !*Promise(u3
     const w = request.writer();
     try w.write(String{.value = name});
 
-    const promise = try i.c.trackResponse(request, u32);
+    const promise = try i.c.trackResponse(request, u32, DBusError);
     errdefer if (promise.release() == 1) promise.destroy();
 
     try i.c.sendMessage(&request);
@@ -318,7 +332,7 @@ const CredentialsValue = union (enum) {
     h: std.fs.File,
 };
 const Credentials = dbuz.types.Dict(String, CredentialsValue);
-pub fn GetConnectionCredentials(i: *const DBus, name: []const u8) !*Promise(Credentials) {
+pub fn GetConnectionCredentials(i: *const DBus, name: []const u8) !*Promise(Credentials, DBusError) {
     var request = try i.c.startMessage(null);
     defer request.deinit();
     request.type = .method_call;
@@ -334,14 +348,14 @@ pub fn GetConnectionCredentials(i: *const DBus, name: []const u8) !*Promise(Cred
     const w = request.writer();
     try w.write(String{.value = name});
 
-    const promise = try i.c.trackResponse(request, Credentials);
+    const promise = try i.c.trackResponse(request, Credentials, DBusError);
     errdefer if (promise.release() == 1) promise.destroy();
 
     try i.c.sendMessage(&request);
     return promise;
 }
 
-pub fn AddMatch(i: *const DBus, rule: []const u8) !*Promise(void) {
+pub fn AddMatch(i: *const DBus, rule: []const u8) !*Promise(void, DBusError) {
     var request = try i.c.startMessage(null);
     defer request.deinit();
     request.type = .method_call;
@@ -357,14 +371,14 @@ pub fn AddMatch(i: *const DBus, rule: []const u8) !*Promise(void) {
     const w = request.writer();
     try w.write(String{.value = rule});
 
-    const promise = try i.c.trackResponse(request, void);
+    const promise = try i.c.trackResponse(request, void, DBusError);
     errdefer if (promise.release() == 1) promise.destroy();
 
     try i.c.sendMessage(&request);
     return promise;
 }
 
-pub fn RemoveMatch(i: *const DBus, rule: []const u8) !*Promise(void) {
+pub fn RemoveMatch(i: *const DBus, rule: []const u8) !*Promise(void, DBusError) {
     var request = try i.c.startMessage(null);
     defer request.deinit();
     request.type = .method_call;
@@ -380,14 +394,14 @@ pub fn RemoveMatch(i: *const DBus, rule: []const u8) !*Promise(void) {
     const w = request.writer();
     try w.write(String{.value = rule});
 
-    const promise = try i.c.trackResponse(request, void);
+    const promise = try i.c.trackResponse(request, void, DBusError);
     errdefer if (promise.release() == 1) promise.destroy();
 
     try i.c.sendMessage(&request);
     return promise;
 }
 
-pub fn GetId(i: *const DBus) !*Promise(String) {
+pub fn GetId(i: *const DBus) !*Promise(String, DBusError) {
     var request = try i.c.startMessage(null);
     defer request.deinit();
     request.type = .method_call;
@@ -398,7 +412,7 @@ pub fn GetId(i: *const DBus) !*Promise(String) {
         .path = "/org/freedesktop/DBus",
     };
 
-    const promise = try i.c.trackResponse(request, String);
+    const promise = try i.c.trackResponse(request, String, DBusError);
     errdefer if (promise.release() == 1) promise.destroy();
 
     try i.c.sendMessage(&request);

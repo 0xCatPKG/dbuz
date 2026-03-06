@@ -28,6 +28,7 @@ pub const Writer = struct {
 
     pub fn write(self: *Writer, in: anytype) !void {
         const T = @TypeOf(in);
+
         const tinfo = @typeInfo(T);
         switch (T) {
             Signature => {
@@ -113,7 +114,8 @@ pub const Writer = struct {
                         self.position += container_buffer.len;
                     },
                     .@"struct" => |st| {
-                        if (comptime types.isDict(T)) {
+                        if (comptime std.meta.hasMethod(T, "toDBus")) return in.toDBus(self)
+                        else if (comptime types.isDict(T)) {
                             if (self.depth == 63) return error.DepthLimitReached;
 
                             var container = try Io.Writer.Allocating.initCapacity(self.allocator, @sizeOf(T.KV) * in.count());
@@ -370,7 +372,8 @@ pub const Reader = struct {
                         return try result.toOwnedSlice(a);
                     },
                     .@"struct" => |st| {
-                        if (comptime types.isDict(T)) {
+                        if (comptime std.meta.hasMethod(T, "fromDBus")) return T.fromDBus(a, self)
+                        else if (comptime types.isDict(T)) {
                             const KV = T.KV;
 
                             var tmp_arena = std.heap.ArenaAllocator.init(a);

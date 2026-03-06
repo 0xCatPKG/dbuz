@@ -6,7 +6,7 @@ pub const types = struct {
     pub const Connection = @import("types/Connection.zig");
     pub const Promise = @import("types/promise.zig").Promise;
     pub const PromiseOpaque = @import("types/promise.zig").PromiseOpaque;
-    pub const PromiseError = @import("types/promise.zig").ErrorData;
+    pub const DBusError = @import("types/promise.zig").DBusError;
     pub const Interface = @import("types/Interface.zig");
     pub const Proxy = @import("types/Proxy.zig");
 

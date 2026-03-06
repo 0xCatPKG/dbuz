@@ -21,7 +21,7 @@ test "DBus Hello" {
     const looper_thread = try dbuz.spawnLooperThread(testing.allocator, conn);
 
     try conn.hello();
-    conn.disconnect(null);
+    conn.disconnect();
 
     looper_thread.join();
 }
@@ -131,10 +131,41 @@ test "homemade proxy" {
     for (proxy.properties.listOfEffects) |effect| {
         std.debug.print("Listed Effect: {s}\n", .{effect.value});
     }
-    conn.disconnect(null);
+    conn.disconnect();
 
     Proxy.deinit(&proxy.interface, alloc);
 
+    looper_thread.join();
+}
+
+test "Introspectable" {
+    const alloc = testing.allocator;
+
+    const conn = try dbuz.connect(alloc, .Session);
+    defer conn.deinit();
+
+    const looper_thread = try dbuz.spawnLooperThread(alloc, conn);
+
+    try conn.hello();
+
+    const Introspectable = dbuz.proxies.Introspectable;
+
+    const promise = try Introspectable.Introspect(
+        conn,
+        alloc,
+        "org.unifiedpush.Distributor.kde",
+        "/org/unifiedpush/Distributor"
+    );
+    defer if (promise.release() == 1) promise.destroy();
+
+    const value, _ = try promise.wait(null);
+    const intropsection = try value;
+    const kde_distributor = intropsection.doc.node;
+
+    try testing.expect(kde_distributor.implementsInterface("org.unifiedpush.Distributor2"));
+    try testing.expect(!kde_distributor.implementsInterface("org.unifiedpush.Distributor3"));
+
+    conn.disconnect();
     looper_thread.join();
 }
 

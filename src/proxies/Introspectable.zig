@@ -8,13 +8,13 @@ const dbuz = @import("../dbuz.zig");
 const Connection = dbuz.types.Connection;
 const Proxy = dbuz.types.Proxy;
 const Promise = dbuz.types.Promise;
-const PromiseError = dbuz.types.PromiseError;
+const DBusError = dbuz.types.DBusError;
 const Message = dbuz.types.Message;
 
 const interface_name = "org.freedesktop.DBus.Introspectable";
 
 const Introspection = xml.Populate(Document);
-const OwnedIntrospection = Introspection.OwnedDocument;
+const IntrospectionError = error {ParsingFailed} || DBusError;
 
 pub const Node = struct {
     pub const xml_shape = .{
@@ -120,7 +120,26 @@ const Document = struct {
     node: Node,
 };
 
-pub fn IntrospectRaw(c: *Connection, gpa: std.mem.Allocator, dest: []const u8, path: []const u8) !*Promise(dbuz.types.String) {
+const OwnedIntrospection = struct {
+    pub const dbus_signature = "s";
+
+    doc: Document,
+    arena: std.heap.ArenaAllocator,
+
+    pub fn fromDBus(gpa: std.mem.Allocator, r: *dbuz.codec.Reader) !OwnedIntrospection {
+        var res: OwnedIntrospection = undefined;
+
+        const xml_data = try r.read(dbuz.types.String, gpa);
+        const offset = if (std.mem.startsWith(u8, xml_data.value, "<!DOCTYPE")) std.mem.indexOfScalar(u8, xml_data.value, '>').? + 1 else 0;
+
+        res.arena = Introspection.fromSlice(gpa, xml_data.value[offset..], &res.doc) catch |err| return switch (err) { error.OutOfMemory => err, else => return error.ParsingFailed};
+
+        return res;
+    }
+
+};
+
+pub fn IntrospectRaw(c: *Connection, gpa: std.mem.Allocator, dest: []const u8, path: []const u8) !*Promise(dbuz.types.String, DBusError) {
     var request = try c.startMessage(gpa);
     defer request.deinit();
 
@@ -130,75 +149,11 @@ pub fn IntrospectRaw(c: *Connection, gpa: std.mem.Allocator, dest: []const u8, p
                .setPath(path)
                .setMember("Introspect");
 
-    const promise = try c.trackResponse(request, dbuz.types.String);
+    const promise = try c.trackResponse(request, dbuz.types.String, DBusError);
     errdefer if (promise.release() == 1) promise.destroy();
 
     try c.sendMessage(&request);
     return promise;
-}
-
-/// Sends introspection request to the remote peer, returns promise used for internal tracking.
-/// User must provide callbacks that will receive error union with results of introspection.
-const CallbackData = struct {
-    pub const Error = error{ParsingFailed} || PromiseError.Error;
-    callback: *const fn (result: Error!OwnedIntrospection, userdata: ?*anyopaque) void,
-    userdata: ?*anyopaque,
-    gpa: std.mem.Allocator,
-};
-pub fn IntrospectAsync(
-    c: *Connection,
-    gpa: std.mem.Allocator,
-    dest: []const u8,
-    path: []const u8,
-    callback: *const fn (result: CallbackData.Error!OwnedIntrospection, userdata: ?*anyopaque) void,
-    userdata: ?*anyopaque
-) !*Promise(dbuz.types.String) {
-    const promise = try IntrospectRaw(c, gpa, dest, path);
-    errdefer if (promise.release() == 1) promise.destroy();
-
-    const cbd = try gpa.create(CallbackData);
-    cbd.* = .{
-        .callback = callback,
-        .userdata = userdata,
-        .gpa = gpa,
-    };
-    
-    promise.setupCallbacks(.{
-        .timeout = null,
-
-        .response = &introspectionResponse,
-        .@"error" = &introspectionError,
-    },cbd);
-
-    return promise;
-}
-
-fn introspectionResponse(
-    _: *Promise(dbuz.types.String),
-    xml_data: dbuz.types.String,
-    arena: *std.heap.ArenaAllocator,
-    userdata: ?*anyopaque
-) void {
-    const cbd_ptr: *CallbackData = @alignCast(@ptrCast(userdata));
-    const cbd = cbd_ptr.*;
-    cbd.gpa.destroy(cbd_ptr);
-
-    const offset = if (std.mem.startsWith(u8, xml_data.value, "<!DOCTYPE")) std.mem.indexOfScalar(u8, xml_data.value, '>').? + 1 else 0;
-
-    const owned_doc = Introspection.initFromSlice(arena.allocator(), xml_data.value[offset..]) catch {
-        cbd.callback(CallbackData.Error.ParsingFailed, cbd.userdata);
-        return;
-    };
-    defer owned_doc.deinit();
-    cbd.callback(owned_doc, cbd.userdata); 
-}
-
-fn introspectionError(_: *Promise(dbuz.types.String), err: PromiseError, userdata: ?*anyopaque) void {
-    const cbd_ptr: *CallbackData = @alignCast(@ptrCast(userdata));
-    const cbd = cbd_ptr.*;
-    cbd.gpa.destroy(cbd_ptr);
-
-    cbd.callback(err.error_code, cbd.userdata);
 }
 
 pub fn Introspect(
@@ -206,16 +161,19 @@ pub fn Introspect(
     gpa: std.mem.Allocator,
     dest: []const u8,
     path: []const u8,
-) !OwnedIntrospection {
-    const promise = try IntrospectRaw(c, gpa, dest, path);
-    defer if (promise.release() == 1) promise.destroy();
+) !*Promise(OwnedIntrospection, IntrospectionError) {
+    var request = try c.startMessage(gpa);
+    defer request.deinit();
 
-    const value, _ = try promise.wait(null);
-    switch (value) {
-        .@"error" => |err| return err.error_code,
-        .response => |val| {
-            const offset = if (std.mem.startsWith(u8, val.value, "<!DOCTYPE")) std.mem.indexOfScalar(u8, val.value, '>').? + 1 else 0;
-            return Introspection.initFromSlice(gpa, val.value[offset..]);
-        },
-    }
+    request.type = .method_call;
+    _ = request.setDestination(dest)
+               .setInterface(interface_name)
+               .setPath(path)
+               .setMember("Introspect");
+
+    const promise = try c.trackResponse(request, OwnedIntrospection, IntrospectionError);
+    errdefer if (promise.release() == 1) promise.destroy();
+
+    try c.sendMessage(&request);
+    return promise;
 }

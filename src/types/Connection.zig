@@ -19,7 +19,7 @@ const trie = @import("../tree.zig");
 const Message = dbuz.types.Message;
 const Promise = dbuz.types.Promise;
 const PromiseOpaque = dbuz.types.PromiseOpaque;
-const PromiseError = dbuz.types.PromiseError;
+const DBusError = dbuz.types.DBusError;
 const Interface = dbuz.types.Interface;
 const MatchRule = dbuz.types.MatchRule;
 const Proxy = dbuz.types.Proxy;
@@ -134,7 +134,7 @@ pub fn release(c: *Connection) usize {
     return c.refcounter.fetchSub(1, .seq_cst);
 }
 
-pub fn disconnect(c: *Connection, reason: ?[]const u8) void {
+pub fn disconnect(c: *Connection) void {
     if (c.state == .Disconnected) unreachable;
     posix.shutdown(c.handle, .both) catch {};
 
@@ -144,10 +144,7 @@ pub fn disconnect(c: *Connection, reason: ?[]const u8) void {
     var it = c.tracker.iterator();
     while (it.next()) |kv| {
         const promise = kv.value_ptr.*;
-        promise.vtable.errored(promise, .{
-            .message = reason,
-            .error_code = error.Disconnected,
-        });
+        promise.vtable.errored(promise, error.Disconnected);
         if (promise.vtable.release(promise) == 1) promise.vtable.destroy(promise);
     }
     c.tracker.deinit(c.default_allocator);
@@ -231,8 +228,34 @@ pub fn startMessage(self: *Connection, gpa: ?std.mem.Allocator) !Message {
     return message;
 }
 
-fn helloReplied(_: *Promise(dbuz.types.String), name: dbuz.types.String, _: *std.heap.ArenaAllocator, userdata: ?*anyopaque) void {
+// fn helloReplied(_: *Promise(dbuz.types.String), name: dbuz.types.String, _: *std.heap.ArenaAllocator, userdata: ?*anyopaque) void {
+//     const c: *Connection = @alignCast(@ptrCast(userdata));
+//
+//     var unique_id: usize = undefined;
+//     const promise = c.registerListenerAsync(&c.dbus, .{
+//         .interface = "org.freedesktop.DBus",
+//         .path = "/org/freedesktop/DBus",
+//     }, &unique_id, c.default_allocator) catch unreachable;
+//     if (promise.release() == 1) promise.destroy();
+//
+//     c.unique_name = c.default_allocator.dupe(u8, name.value) catch null;
+//     logger.debug("Hello received: unique name is {s}", .{name.value});
+// }
+//
+// fn helloFailed(_: *Promise(dbuz.types.String), err: PromiseError, _: ?*anyopaque) void {
+//     logger.err("Hello failed: {s}", .{
+//         err.message orelse @errorName(err.error_code)
+//     });
+//     unreachable;
+// }
+
+fn hello_cb(_: *Promise(dbuz.types.String, DBusError), value: DBusError!dbuz.types.String, _: ?*std.heap.ArenaAllocator, userdata: ?*anyopaque) void {
     const c: *Connection = @alignCast(@ptrCast(userdata));
+
+    const unique_name = value catch |err| {
+        logger.err("Hello failed: {s}", .{@errorName(err)});
+        return;
+    };
 
     c.dbus = .bind(c, .{
         .NameOwnerChanged = null,
@@ -243,22 +266,15 @@ fn helloReplied(_: *Promise(dbuz.types.String), name: dbuz.types.String, _: *std
         .userdata = null,
     });
 
-    var unique_id: usize = undefined;
     const promise = c.registerListenerAsync(&c.dbus, .{
         .interface = "org.freedesktop.DBus",
-        .path = "/org/freedesktop/DBus",
-    }, &unique_id, c.default_allocator) catch unreachable;
+        .path = "/org/freedesktop/DBus"
+    }, null, c.default_allocator) catch unreachable;
     if (promise.release() == 1) promise.destroy();
 
-    c.unique_name = c.default_allocator.dupe(u8, name.value) catch null;
-    logger.debug("Hello received: unique name is {s}", .{name.value});
-}
+    c.unique_name = c.default_allocator.dupe(u8, unique_name.value) catch unreachable;
+    logger.debug("Hello reply received: {*}'s unique name is {s}", .{ c, unique_name.value });
 
-fn helloFailed(_: *Promise(dbuz.types.String), err: PromiseError, _: ?*anyopaque) void {
-    logger.err("Hello failed: {s}", .{
-        err.message orelse @errorName(err.error_code)
-    });
-    unreachable;
 }
 
 /// Sends org.freedesktop.DBus.Hello on message bus in asyncronous manner.
@@ -266,13 +282,9 @@ fn helloFailed(_: *Promise(dbuz.types.String), err: PromiseError, _: ?*anyopaque
 /// (Internally, just a wrapper above Connection.dbus.Hello proxy call, that setups some callbacks, you can do it your way if you want to)
 ///
 /// Returns promise to a DBus String, that is connection's unique name.
-pub fn helloAsync(c: *Connection) !*Promise(dbuz.types.String) {
+pub fn helloAsync(c: *Connection) !*Promise(dbuz.types.String, DBusError) {
     const promise = try dbuz.proxies.DBus.Hello(c);
-    promise.setupCallbacks(.{
-        .response = &helloReplied,
-        .@"error" = &helloFailed,
-        .timeout = null
-    }, c);
+    promise.setupCallback(&hello_cb, c);
 
     return promise;
 }
@@ -283,19 +295,15 @@ pub fn helloAsync(c: *Connection) !*Promise(dbuz.types.String) {
 pub fn hello(c: *Connection) !void {
     const promise = try c.helloAsync();
     defer if (promise.release() == 1) promise.destroy();
-    const value, const arena = try promise.wait(null);
-    switch (value) {
-        .response => return,
-        .@"error" => |e| return e.error_code,
-    }
-    _ = arena;
+    const value, _ = try promise.wait(null);
+    _ = value catch return error.HelloFailed;
 }
 
 /// Create a *Promise of type T from a message. Bus will update promise if message will get response, error or will timeout (only if you provided implementation for it)
 /// 
 /// Callers owns reference to a Promise. As release order is unclear, caller, when releasing reference must check if it was last reference and destroy promise if so.
-pub fn trackResponse(c: *Connection, message: Message, comptime T: type) !*Promise(T) {
-    const promise = try Promise(T).create(c.default_allocator);
+pub fn trackResponse(c: *Connection, message: Message, comptime T: type, comptime E: type) !*Promise(T, E) {
+    const promise = try Promise(T, E).create(c.default_allocator);
     errdefer promise.destroy();
 
     c.tracker_lock.lock();
@@ -517,30 +525,34 @@ pub fn unregisterInterface(c: *Connection, impl: anytype, comptime path: []const
     } else return false;
 }
 
-fn listenerAdded(_: *Promise(void), _: void, _: *std.heap.ArenaAllocator, userdata: ?*anyopaque) void {
+fn listener_add_cb(_: *Promise(void, DBusError), maybe_error: DBusError!void, _: ?*std.heap.ArenaAllocator, userdata: ?*anyopaque) void {
     const listener: *ListenerManaged = @alignCast(@ptrCast(userdata));
-    logger.debug("[Listener:{}] Successfully registered on DBus", .{listener.unique_id});
-}
 
-fn listenerAddError(_: *Promise(void), cause: PromiseError, userdata: ?*anyopaque) void {
-    const listener: *ListenerManaged = @alignCast(@ptrCast(userdata));
-    logger.err("[Listener:{}] Unable to register on DBus: {s}", .{listener.unique_id, cause.message orelse @errorName(cause.error_code)});
+    _ = maybe_error catch |err| {
 
-    listener.c.listeners.mutex.lock();
-    defer listener.c.listeners.mutex.unlock();
+        logger.err("[{*}] Unable to register rule on DBus: org.freedesktop.DBus.Error.{s}", .{listener, @errorName(err)});
 
-    for (listener.c.listeners.list.items, 0..) |data, i| {
-        if (data.unique_id != listener.unique_id) continue;
-        if (data.interface.release() == 1) data.interface.destroy(data.allocator);
-        _ = listener.c.listeners.list.swapRemove(i);
-        return;
-    }
+        listener.c.listeners.mutex.lock();
+        defer listener.c.listeners.mutex.unlock();
+
+        for (listener.c.listeners.list.items, 0..) |data, i| {
+            if (data.unique_id != listener.unique_id) continue;
+            if (data.interface.release() == 1) data.interface.destroy(data.allocator);
+            _ = listener.c.listeners.list.swapRemove(i);
+            return;
+        }
+
+    };
+
+    logger.debug("[{*}] Successfully registered on DBus", .{listener});
+
+
 }
 
 /// Requests listener to be added.
 /// Doesn't guarantee that listener will be added
 /// unique_id is unique id of listener that can be used for listener unregistering.
-pub fn registerListenerAsync(c: *Connection, impl: anytype, rule: MatchRule, unique_id: *usize, allocator: mem.Allocator) !*Promise(void) {
+pub fn registerListenerAsync(c: *Connection, impl: anytype, rule: MatchRule, unique_id: ?*usize, allocator: mem.Allocator) !*Promise(void, DBusError) {
     c.listeners.mutex.lock();
     defer c.listeners.mutex.unlock();
 
@@ -559,16 +571,12 @@ pub fn registerListenerAsync(c: *Connection, impl: anytype, rule: MatchRule, uni
         .unique_id = c.next_listener_id.fetchAdd(1, .monotonic),
     };
 
-    unique_id.* = listener.unique_id;
+    if (unique_id) |uid| uid.* = listener.unique_id;
 
-    logger.debug("Registering a new listener of type {s} with unqiue_id {}, match string \"{s}\"", .{ @typeName(@TypeOf(impl)), listener.unique_id, key });
+    logger.debug("Registering a new [{*}] of type {s} with unqiue_id {}, match string \"{s}\"", .{ listener, @typeName(@TypeOf(impl)), listener.unique_id, key });
 
     const promise = try c.dbus.AddMatch(key);
-    promise.setupCallbacks(.{
-        .timeout = null,
-        .response = &listenerAdded,
-        .@"error" = &listenerAddError,
-    }, listener);
+    promise.setupCallback(&listener_add_cb, listener);
 
     return promise;
 }
