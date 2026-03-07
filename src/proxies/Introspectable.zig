@@ -14,7 +14,7 @@ const Message = dbuz.types.Message;
 const interface_name = "org.freedesktop.DBus.Introspectable";
 
 const Introspection = xml.Populate(Document);
-const IntrospectionError = error {ParsingFailed} || DBusError;
+pub const IntrospectionError = error {ParsingFailed} || DBusError;
 
 pub const Node = struct {
     pub const xml_shape = .{
@@ -120,7 +120,7 @@ const Document = struct {
     node: Node,
 };
 
-const OwnedIntrospection = struct {
+pub const OwnedIntrospection = struct {
     pub const dbus_signature = "s";
 
     doc: Document,
