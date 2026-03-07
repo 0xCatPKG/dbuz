@@ -5,7 +5,7 @@ This library is more like a pet project and practice for me to learn Zig. It pro
 ## Installation
 
 ```sh
-$ zig fetch --save git+https://github.com/0xCatPKG/dbuz
+$ zig fetch --save git+https://git.rvvm.dev/0xCatPKG/dbuz
 ```
 
 Then in your build.zig file, do something like
