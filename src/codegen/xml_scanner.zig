@@ -7,6 +7,7 @@ const mem = std.mem;
 const proc = std.process;
 
 const assert = std.debug.assert;
+const typehint_name = "dev.rvvm.dbuz.TypeHint";
 
 const gpa = general_purpose_allocator.allocator();
 var general_purpose_allocator = std.heap.GeneralPurposeAllocator(.{}){};
@@ -90,7 +91,7 @@ pub fn main() !void {
     for (interface.methods) |method| {
         var native_types_annotation: ?mem.SplitIterator(u8, .scalar) = null;
         for (method.annotations) |annotation| {
-            if (mem.eql(u8, annotation.name, "com.github.0xCatPKG.DBuz.TypeHint")) native_types_annotation = mem.splitScalar(u8, annotation.value, ',');
+            if (mem.eql(u8, annotation.name, typehint_name)) native_types_annotation = mem.splitScalar(u8, annotation.value, ',');
         }
 
         if (native_types_annotation != null and native_types_mod == null)
@@ -218,7 +219,7 @@ pub fn main() !void {
     for (interface.properties) |property| {
         var native_type: ?[]const u8 = null;
         for (property.annotations) |annotation| {
-            if (mem.eql(u8, annotation.name, "com.github.0xCatPKG.DBuz.TypeHint")) native_type = annotation.value;
+            if (mem.eql(u8, annotation.name, typehint_name)) native_type = annotation.value;
         }
 
         if (native_type != null and native_types_mod == null)
@@ -250,8 +251,11 @@ pub fn main() !void {
     for (interface.properties) |property| {
         var native_type: ?[]const u8 = null;
         for (property.annotations) |annotation| {
-            if (mem.eql(u8, annotation.name, "com.github.0xCatPKG.DBuz.TypeHint")) native_type = annotation.value;
+            if (mem.eql(u8, annotation.name, typehint_name)) native_type = annotation.value;
         }
+
+        if (native_type != null and native_types_mod == null)
+            return error.NativeTypesModuleNotProvided;
 
         try writer.print("\n    ", .{});
         if (native_type) |nt| {
@@ -267,7 +271,7 @@ pub fn main() !void {
     for (interface.signals) |signal| {
         var native_types_annotation: ?mem.SplitIterator(u8, .scalar) = null;
         for (signal.annotations) |annotation| {
-            if (mem.eql(u8, annotation.name, "com.github.0xCatPKG.DBuz.TypeHint")) native_types_annotation = mem.splitScalar(u8, annotation.value, ',');
+            if (mem.eql(u8, annotation.name, typehint_name)) native_types_annotation = mem.splitScalar(u8, annotation.value, ',');
         }
 
         if (native_types_annotation != null and native_types_mod == null)
