@@ -932,7 +932,7 @@ pub fn dupeValue(gpa: std.mem.Allocator, v: anytype) !@TypeOf(v) {
         .@"union" => |un| un_blk: {
             inline for (un.fields) |field| {
                 if (!std.mem.eql(u8, field.name, @tagName(v))) comptime continue;
-                break :un_blk @unionInit(T, field.name, try dupeValue(@field(v, field.name), gpa));
+                break :un_blk @unionInit(T, field.name, try dupeValue(gpa, @field(v, field.name)));
             }
         },
         else => v,
