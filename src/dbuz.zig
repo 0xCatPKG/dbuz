@@ -46,6 +46,9 @@ pub const proxies = struct {
 pub const utils = struct {
     pub const dupeValue = @import("types/dbus_types.zig").dupeValue;
     pub const deinitValue = @import("types/dbus_types.zig").deinitValueRecursive;
+    pub const isTypeSerializable = @import("types/dbus_types.zig").isTypeSerializable;
+    pub const isTypeDeserializable = @import("types/dbus_types.zig").isTypeDeserializable;
+    pub const signatureOf = @import("types/dbus_types.zig").guessSignature;
 };
 
 pub const codec = @import("codec.zig");
