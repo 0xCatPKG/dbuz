@@ -96,13 +96,14 @@ pub inline fn isTypeSerializable(comptime T: type) bool {
             break :blk true;
         },
         .@"union" => |unioninfo| blk: {
+            if (std.meta.hasMethod(T, "toDBus")) break :blk true;
             if (unioninfo.tag_type == null) break :blk false;
             for (unioninfo.fields) |field| {
                 if (!isTypeSerializable(field.type)) break :blk false;
             }
             break :blk true;
         },
-        .@"enum" => |enuminfo| isTypeSerializable(enuminfo.tag_type),
+        .@"enum" => |enuminfo| if (std.meta.hasMethod(T, "toDBus")) true else isTypeSerializable(enuminfo.tag_type),
     };
 }
 pub inline fn isTypeDeserializable(comptime T: type) bool {
@@ -125,13 +126,14 @@ pub inline fn isTypeDeserializable(comptime T: type) bool {
             break :blk true;
         },
         .@"union" => |unioninfo| blk: {
+            if (std.meta.hasMethod(T, "fromDBus")) break :blk true;
             if (unioninfo.tag_type == null) break :blk false;
             for (unioninfo.fields) |field| {
                 if (!isTypeSerializable(field.type)) break :blk false;
             }
             break :blk true;
         },
-        .@"enum" => |enuminfo| isTypeSerializable(enuminfo.tag_type),
+        .@"enum" => |enuminfo| if (std.meta.hasMethod(T, "fromDBus")) true else isTypeSerializable(enuminfo.tag_type),
     };
 }
 
@@ -198,7 +200,12 @@ pub inline fn guessSignature(T: type) [:0]const u8 {
                     if (!structinfo.is_tuple) signature = signature ++ ")";
                 },
                 .@"union" => {
+                    if (@hasDecl(T, "dbus_signature")) break :blk signature ++ T.dbus_signature;
                     signature = signature ++ "v";
+                },
+                .@"enum" => |en| {
+                    if (@hasDecl(T, "dbus_signature")) break :blk signature ++ T.dbus_signature;
+                    signature = signature ++ guessSignature(en.tag_type);
                 },
                 else => @compileError("Unknown type " ++ @typeName(T) ++ " during signature generation"),
             }

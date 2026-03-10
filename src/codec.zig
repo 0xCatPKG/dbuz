@@ -4,7 +4,7 @@ const mem = std.mem;
 const Io = std.Io;
 const builtin = @import("builtin");
 
-const comptimePrint = std.fmt.comptimePrintl;
+const comptimePrint = std.fmt.comptimePrint;
 
 const types = @import("types/dbus_types.zig");
 const String = types.String;
@@ -28,8 +28,8 @@ pub const Writer = struct {
 
     pub fn write(self: *Writer, in: anytype) !void {
         const T = @TypeOf(in);
-
         const tinfo = @typeInfo(T);
+        comptime if (!types.isTypeSerializable(T)) @compileError(comptimePrint("Unable to serialize value of type {s}, type doesn't supports dbus serialization", .{ @typeName(T) }));
         switch (T) {
             Signature => {
                 try self.w.writeByte(@truncate(in.value.len));
@@ -114,7 +114,8 @@ pub const Writer = struct {
                         self.position += container_buffer.len;
                     },
                     .@"struct" => |st| {
-                        if (comptime std.meta.hasMethod(T, "toDBus")) return in.toDBus(self)
+                        if (comptime std.meta.hasMethod(T, "toDBus"))
+                            return in.toDBus(self)
                         else if (comptime types.isDict(T)) {
                             if (self.depth == 63) return error.DepthLimitReached;
 
@@ -156,24 +157,32 @@ pub const Writer = struct {
                         }
                     },
                     .@"union" => |un| {
-                        if (un.tag_type == null) @compileError("Untagged unions are not supported");
-                        if (un.fields.len == 0) return;
-                        const tag = @tagName(in);
-                        inline for (un.fields) |ufield| {
-                            if (std.mem.eql(u8, ufield.name, tag)) {
-                                const field_sig = types.guessSignature(ufield.type);
-                                try self.write(Signature{
-                                    .value = field_sig,
-                                });
-                                try self.write(@field(in, ufield.name));
-                                return;
+                        if (comptime std.meta.hasMethod(T, "toDBus"))
+                            return in.toDBus(self)
+                        else {
+                            if (un.tag_type == null) @compileError("Untagged unions are not supported");
+                            if (un.fields.len == 0) return;
+                            const tag = @tagName(in);
+                            inline for (un.fields) |ufield| {
+                                if (std.mem.eql(u8, ufield.name, tag)) {
+                                    const field_sig = types.guessSignature(ufield.type);
+                                    try self.write(Signature{
+                                        .value = field_sig,
+                                    });
+                                    try self.write(@field(in, ufield.name));
+                                    return;
+                                }
                             }
+                            unreachable;
                         }
-                        unreachable;
                     },
                     .@"enum" => |en| {
-                        const val: en.tag_type = @intFromEnum(in);
-                        self.write(val);
+                        if (comptime std.meta.hasMethod(T, "toDBus"))
+                            return in.toDBus(self)
+                        else {
+                            const val: en.tag_type = @intFromEnum(in);
+                            self.write(val);
+                        }
                     },
                     .void => {},
                     else => @compileError(comptimePrint("Type {s} is not supported for serialization.", .{@typeName(T)})),
@@ -247,10 +256,11 @@ pub const Reader = struct {
         r.* = .from(r.allocator, r.r, r.fdlist, r.endian);
     }
 
-
     pub fn read(self: *Reader, T: type, allocator: ?mem.Allocator) !T {
         const a = allocator orelse self.allocator;
         const tinfo = @typeInfo(T);
+        if (comptime (T == void)) return {};
+        comptime if (!types.isTypeDeserializable(T)) @compileError(comptimePrint("Requested type {s} is not DBus-deserializable", .{ @typeName(T) }));
         switch (T) {
             Signature => {
                 const siglen: u8 = try self.r.takeByte();
@@ -372,7 +382,8 @@ pub const Reader = struct {
                         return try result.toOwnedSlice(a);
                     },
                     .@"struct" => |st| {
-                        if (comptime std.meta.hasMethod(T, "fromDBus")) return T.fromDBus(a, self)
+                        if (comptime std.meta.hasMethod(T, "fromDBus"))
+                            return T.fromDBus(a, self)
                         else if (comptime types.isDict(T)) {
                             const KV = T.KV;
 
@@ -415,27 +426,35 @@ pub const Reader = struct {
                         }
                     },
                     .@"union" => |un| {
-                        if (un.tag_type == null) @compileError("Untagged unions are not supported");
-                        const sig: Signature = try self.read(Signature, a);
-                        defer sig.deinit(a);
+                        if (comptime std.meta.hasMethod(T, "fromDBus"))
+                            return T.fromDBus(a, self)
+                        else {
+                            if (un.tag_type == null) @compileError("Untagged unions are not supported");
+                            const sig: Signature = try self.read(Signature, a);
+                            defer sig.deinit(a);
 
-                        var result: T = undefined;
+                            var result: T = undefined;
 
-                        var matched = false;
-                        inline for (un.fields) |ufield| {
-                            const field_sig = types.guessSignature(ufield.type);
-                            if (!std.mem.eql(u8, sig.value, field_sig)) comptime continue;
-                            result = @unionInit(T, ufield.name, try self.read(ufield.type, a));
-                            matched = true;
-                            break;
+                            var matched = false;
+                            inline for (un.fields) |ufield| {
+                                const field_sig = types.guessSignature(ufield.type);
+                                if (!std.mem.eql(u8, sig.value, field_sig)) comptime continue;
+                                result = @unionInit(T, ufield.name, try self.read(ufield.type, a));
+                                matched = true;
+                                break;
+                            }
+                            if (!matched) return error.UnionVariantNotFound;
+                            return result;
                         }
-                        if (!matched) return error.UnionVariantNotFound;
-                        return result;
                     },
                     .@"enum" => |en| {
-                        if (en.is_exhaustive) @compileError(std.fmt.comptimePrint("{s} cannot be deserialized: Only not exhaustive enums available for deserialization, as we can get any value in range from DBus", .{@typeName(T)}));
-                        const val = try self.read(en.tag_type, a);
-                        return @as(T, @enumFromInt(val));
+                        if (comptime std.meta.hasMethod(T, "fromDBus"))
+                            return T.fromDBus(a, self)
+                        else {
+                            if (en.is_exhaustive) @compileError(std.fmt.comptimePrint("{s} cannot be deserialized: Only not exhaustive enums available for deserialization, as we can get any value in range from DBus", .{@typeName(T)}));
+                            const val = try self.read(en.tag_type, a);
+                            return @as(T, @enumFromInt(val));
+                        }
                     },
                     .void => return {},
                     else => @compileError(comptimePrint("Type {s} is not supported for deserialization.", .{@typeName(T)})),
