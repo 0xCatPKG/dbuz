@@ -101,6 +101,7 @@ pub const ProxyScanner = struct {
         if (self.native_types_mod) |ntm| mod.addImport(self.native_types_mod_name.?, ntm);
 
         self.proxies.put(self.b.allocator, name, mod) catch @panic("OOM");
+        scan.setName(self.b.fmt("Generating proxy {s}", .{ name }));
     }
 
     pub fn generate(self: *ProxyScanner) *Build.Module {
