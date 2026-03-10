@@ -332,7 +332,7 @@ pub fn main() !void {
 
         for (native_types.items) |nt| {
             const typename, const typesig = nt;
-            try writer.print("    if (!std.mem.eql(u8, dbuz.utils.signatureOf(native_types.{s}), \"{s}\")) @compileError(\"Exported native type {s} that needed by interface named {s} has invalid signature: expected \\\"{s}\\\" but found \\\"\" ++ dbuz.types.signatureOf(native_types.{s}) ++ \"\\\"\");\n", .{
+            try writer.print("    if (!std.mem.eql(u8, dbuz.utils.signatureOf(native_types.{s}), \"{s}\")) @compileError(\"Exported native type {s} that needed by interface named {s} has invalid signature: expected \\\"{s}\\\" but found \\\"\" ++ dbuz.utils.signatureOf(native_types.{s}) ++ \"\\\"\");\n", .{
                 typename, typesig, typename, interface.name, typesig, typename
             });
         }
