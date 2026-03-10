@@ -60,7 +60,8 @@ pub const ProxyScanner = struct {
     b: *Build,
     dbuz: *Build.Module,
     proxies: std.StringArrayHashMapUnmanaged(*Build.Module) = .empty,
-    native_types_mod: ?[]const u8 = null,
+    native_types_mod: ?*Build.Module = null,
+    native_types_mod_name: ?[]const u8 = null,
 
     scanner_exe: *Build.Step.Compile,
 
@@ -75,13 +76,14 @@ pub const ProxyScanner = struct {
         return self;
     }
 
-    pub fn setNativeTypesFile(self: *ProxyScanner, module_name: []const u8) void {
-        self.native_types_mod = module_name;
+    pub fn setNativeTypesModule(self: *ProxyScanner, module_name: []const u8, module: *Build.Module) void {
+        self.native_types_mod_name = module_name;
+        self.native_types_mod = module;
     }
 
     pub fn addProxy(self: *ProxyScanner, name: []const u8, path: Build.LazyPath) void {
         const scan = self.b.addRunArtifact(self.scanner_exe);
-        if (self.native_types_mod) |ntm| {
+        if (self.native_types_mod_name) |ntm| {
             scan.addArg("-t");
             scan.addArg(ntm);
         }
@@ -96,6 +98,7 @@ pub const ProxyScanner = struct {
             .root_source_file = proxy_file,
             .imports = &.{ .{ .name = "dbuz", .module = self.dbuz } }
         });
+        if (self.native_types_mod) |ntm| mod.addImport(self.native_types_mod_name.?, ntm);
 
         self.proxies.put(self.b.allocator, name, mod) catch @panic("OOM");
     }
