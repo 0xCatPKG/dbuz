@@ -60,6 +60,7 @@ pub const ProxyScanner = struct {
     b: *Build,
     dbuz: *Build.Module,
     proxies: std.StringArrayHashMapUnmanaged(*Build.Module) = .empty,
+    native_types_file: ?Build.LazyPath = null,
 
     scanner_exe: *Build.Step.Compile,
 
@@ -74,8 +75,16 @@ pub const ProxyScanner = struct {
         return self;
     }
 
+    pub fn setNativeTypesFile(self: *ProxyScanner, path: Build.LazyPath) void {
+        self.native_types_file = path;
+    }
+
     pub fn addProxy(self: *ProxyScanner, name: []const u8, path: Build.LazyPath) void {
         const scan = self.b.addRunArtifact(self.scanner_exe);
+        if (self.native_types_file) |ntf| {
+            scan.addArg("-t");
+            scan.addFileArg(ntf);
+        }
         scan.addArg("-n");
         scan.addArg(name);
         scan.addArg("-i");

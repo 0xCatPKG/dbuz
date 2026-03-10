@@ -17,6 +17,7 @@ pub fn main() !void {
     var xml_src: ?[]const u8 = null;
     var dest: ?[]const u8 = null;
     var passed_name: ?[]const u8 = null;
+    var native_types_mod: ?[]const u8 = null;
 
     var args = proc.args();
     while (args.next()) |arg| {
@@ -26,8 +27,9 @@ pub fn main() !void {
             dest = args.next() orelse return error.ArgMissing;
         } else if (mem.eql(u8, arg, "-n")) {
             passed_name = args.next() orelse return error.ArgMissing;
+        } else if (mem.eql(u8, arg, "-t")) {
+            native_types_mod = args.next() orelse return error.ArgMissing;
         }
-
     }
 
     if (xml_src == null or dest == null or passed_name == null) return error.RequiredArgMissing;
@@ -91,6 +93,9 @@ pub fn main() !void {
             if (mem.eql(u8, annotation.name, "com.github.0xCatPKG.DBuz.TypeHint")) native_types_annotation = mem.splitScalar(u8, annotation.value, ',');
         }
 
+        if (native_types_annotation != null and native_types_mod == null)
+            return error.NativeTypesModuleNotProvided;
+
         var ins_ended_when: ?usize = null;
 
         try writer.print("pub fn {s}(p: *{s}, gpa: ?std.mem.Allocator", .{method.name, passed_name.?});
@@ -104,7 +109,7 @@ pub fn main() !void {
 
             if (native_types_annotation) |*nts| {
                 if (nts.next()) |native_type| {
-                    try writer.print("{s}", .{ native_type });
+                    try writer.print("native_types.{s}", .{ native_type });
                     try native_types.append(gpa, .{ native_type, arg.type });
                     continue :in_loop;
                 }
@@ -121,7 +126,7 @@ pub fn main() !void {
 
                 if (native_types_annotation) |*nts| {
                     if (nts.next()) |native_type| {
-                        try writer.print("{s}", .{ native_type });
+                        try writer.print("native_types.{s}", .{ native_type });
                         try native_types.append(gpa, .{ native_type, arg.type });
                         continue :out_loop;
                     }
@@ -216,9 +221,12 @@ pub fn main() !void {
             if (mem.eql(u8, annotation.name, "com.github.0xCatPKG.DBuz.TypeHint")) native_type = annotation.value;
         }
 
+        if (native_type != null and native_types_mod == null)
+            return error.NativeTypesModuleNotProvided;
+
         try writer.print("    @\"{s}\": ", .{property.name});
         if (native_type) |nt| {
-            try writer.print("{s}", .{nt});
+            try writer.print("native_types.{s}", .{nt});
             try native_types.append(gpa, .{ nt, property.name });
         } else {
             try writeDBusType(property.type, writer);
@@ -247,7 +255,7 @@ pub fn main() !void {
 
         try writer.print("\n    ", .{});
         if (native_type) |nt| {
-            try writer.print("{s}", .{nt});
+            try writer.print("native_types.{s}", .{nt});
         } else {
             try writeDBusType(property.type, writer);
         }
@@ -261,6 +269,10 @@ pub fn main() !void {
         for (signal.annotations) |annotation| {
             if (mem.eql(u8, annotation.name, "com.github.0xCatPKG.DBuz.TypeHint")) native_types_annotation = mem.splitScalar(u8, annotation.value, ',');
         }
+
+        if (native_types_annotation != null and native_types_mod == null)
+            return error.NativeTypesModuleNotProvided;
+
         try writer.print("    pub const @\"{s}\" = dbuz.types.Signal(struct {{ ", .{signal.name});
         arg_loop: for (signal.args) |arg| {
             if (native_types_annotation) |*nts| {
@@ -313,6 +325,20 @@ pub fn main() !void {
         \\
         \\
         , .{passed_name.?, passed_name.?, passed_name.?});
+
+    if (native_types_mod) |mod| {
+        try writer.print("const native_types = @import(\"{s}\");\n", .{ mod });
+        try writer.print("comptime {{\n", .{});
+
+        for (native_types.items) |nt| {
+            const typename, const typesig = nt;
+            try writer.print("    if (!std.mem.eql(u8, dbuz.utils.signatureOf(native_types.{s}), \"{s}\")) @compileError(\"Exported native type {s} that needed by interface named {s} has invalid signature: expected \\\"{s}\\\" but found \\\"\" ++ dbuz.types.signatureOf(native_types.{s}) ++ \"\\\"\");\n", .{
+                typename, typesig, typename, interface.name, typesig, typename
+            });
+        }
+
+        try writer.print("}}\n", .{});
+    }
 
     const outfile = try fs.createFileAbsolute(dest.?, .{});
     defer outfile.close();
