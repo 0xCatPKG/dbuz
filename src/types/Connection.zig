@@ -39,6 +39,13 @@ const ListenerManaged = struct {
     unique_id: usize,
 };
 
+const TimeoutHandler = struct {
+    add: *const fn (serial: u32, next_ms: u64, userdata: ?*anyopaque) void,
+    rem: *const fn (serial: u32, userdata: ?*anyopaque) void,
+
+    userdata: ?*anyopaque,
+};
+
 /// Default allocator to be used if another not passed to function.
 default_allocator: mem.Allocator,
 
@@ -61,9 +68,11 @@ next_listener_id: atomic.Value(usize) = .init(1),
 pending_message: ?Message = null,
 pending_arena: ?*std.heap.ArenaAllocator = null,
 
-/// MethodCall response tracker.
-tracker: std.AutoArrayHashMapUnmanaged(u32, *PromiseOpaque) = .{},
-tracker_lock: Thread.Mutex = .{},
+tracker: struct {
+    hash: std.AutoArrayHashMapUnmanaged(u32, *PromiseOpaque) = .{},
+    mutex: Thread.Mutex = .{},
+    timeout_handler: ?TimeoutHandler = null,
+} = .{},
 
 object_tree: struct {
     mutex: Thread.Mutex,
@@ -138,17 +147,18 @@ pub fn disconnect(c: *Connection) void {
     if (c.state == .Disconnected) unreachable;
     posix.shutdown(c.handle, .both) catch {};
 
-    c.tracker_lock.lock();
-    defer c.tracker_lock.unlock();
+    c.tracker.mutex.lock();
+    defer c.tracker.mutex.unlock();
 
-    var it = c.tracker.iterator();
+    var it = c.tracker.hash.iterator();
     while (it.next()) |kv| {
         const promise = kv.value_ptr.*;
         promise.vtable.errored(promise, error.Disconnected);
         if (promise.vtable.release(promise) == 1) promise.vtable.destroy(promise);
+        if (c.tracker.timeout_handler) |th| th.rem(kv.key_ptr.*, th.userdata);
     }
-    c.tracker.deinit(c.default_allocator);
-    c.tracker = .empty;
+    c.tracker.hash.deinit(c.default_allocator);
+    c.tracker.hash = .empty;
 }
 
 /// Advances current connection internal state. Returns null if message is still in reading phase, returns tuple of Message, *ArenaAllocator when message is ready.
@@ -306,22 +316,27 @@ pub fn trackResponse(c: *Connection, message: Message, comptime T: type, comptim
     const promise = try Promise(T, E).create(c.default_allocator);
     errdefer promise.destroy();
 
-    c.tracker_lock.lock();
-    defer c.tracker_lock.unlock();
+    c.tracker.mutex.lock();
+    defer c.tracker.mutex.unlock();
 
-    const entry = try c.tracker.getOrPut(c.default_allocator, message.serial);
-    if (entry.found_existing) return error.DuplicateSerial;
+    const entry = try c.tracker.hash.getOrPut(c.default_allocator, message.serial);
+    if (entry.found_existing) return error.AlreadyTracked;
     entry.value_ptr.* = &promise.interface;
+
+    if (c.tracker.timeout_handler) |th| {
+        const wait_time: u64 = if (message.flags.allow_interactive_authorization) 180 * std.time.ms_per_s else 90 * std.time.ms_per_s;
+        th.add(message.serial, wait_time, th.userdata);
+    }
 
     return promise.reference();
 }
 
 /// Should be called from external mechanism to inform connection that response timeout for Promise with serial `serial` is reached.
-pub fn promiseDeadlineReached(c: *Connection, serial: u32) void {
-    c.tracker_lock.lock();
-    defer c.tracker_lock.unlock();
+pub fn promiseTimedout(c: *Connection, serial: u32) void {
+    c.tracker.mutex.lock();
+    defer c.tracker.mutex.unlock();
 
-    const entry = c.tracker.fetchSwapRemove(serial);
+    const entry = c.tracker.hash.fetchSwapRemove(serial);
 
     if (entry == null) {
         return;
@@ -430,9 +445,10 @@ pub fn handleMessage(c: *Connection, m_a: struct {Message, *std.heap.ArenaAlloca
             if (message.fields.reply_serial == null) return;
 
 
-            c.tracker_lock.lock();
-            const entry = c.tracker.fetchSwapRemove(message.fields.reply_serial.?);
-            c.tracker_lock.unlock();
+            c.tracker.mutex.lock();
+            const entry = c.tracker.hash.fetchSwapRemove(message.fields.reply_serial.?);
+            if (c.tracker.timeout_handler) |th| th.rem(message.fields.reply_serial.?, th.userdata);
+            c.tracker.mutex.unlock();
             if (entry == null) {
                 return;
             }
@@ -477,7 +493,7 @@ pub fn handleMessage(c: *Connection, m_a: struct {Message, *std.heap.ArenaAlloca
         },
         .signal => {
             if (message.fields.path == null or message.fields.interface == null or message.fields.member == null or message.fields.sender == null) return;
-            
+
             c.listeners.mutex.lock();
             defer c.listeners.mutex.unlock();
 
@@ -649,16 +665,16 @@ pub fn deinit(c: *Connection) void {
     {
         if (c.unique_name) |unique_name| c.default_allocator.free(unique_name);
 
-        c.tracker_lock.lock();
+        c.tracker.mutex.lock();
         c.object_tree.mutex.lock();
         c.listeners.mutex.lock();
 
-        defer c.tracker_lock.unlock();
+        defer c.tracker.mutex.unlock();
         defer c.object_tree.mutex.unlock();
         defer c.listeners.mutex.unlock();
 
         {
-            var it = c.tracker.iterator();
+            var it = c.tracker.hash.iterator();
             while (it.next()) |kv| {
                 const promise = kv.value_ptr.*;
                 if (promise.vtable.release(promise) == 1) promise.vtable.destroy(promise);
@@ -686,7 +702,15 @@ pub fn deinit(c: *Connection) void {
     posix.close(c.handle);
     c.listeners.list.deinit(c.default_allocator);
     c.object_tree.tree.deinit(c.default_allocator);
-    c.tracker.deinit(c.default_allocator);
+    c.tracker.hash.deinit(c.default_allocator);
     c.default_allocator.destroy(c);
 }
 
+/// Setups external timeout handler. When new promise is created though .startTracking, it will call handler's .add and when reply received .rem will be called.
+/// From moment serial `.add`'ed, it user's responsibility to call promiseTimedout on serial. promises that was never .wait'ed will never get timeout, if was reply from dbus was never sent. 
+pub fn setTimeoutHandler(c: *Connection, th: TimeoutHandler) void {
+    c.tracker.mutex.lock();
+    defer c.tracker.mutex.unlock();
+
+    c.tracker.timeout_handler = th;
+}
