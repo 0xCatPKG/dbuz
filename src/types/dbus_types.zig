@@ -887,7 +887,7 @@ pub fn dupeValue(gpa: std.mem.Allocator, v: anytype) !@TypeOf(v) {
             break :slice aSlice;
         },
         .@"struct" => |st| st_blk: {
-            if (isDict(T)) {
+            if (comptime isDict(T)) {
                 var dict = T.init(gpa);
                 errdefer dict.deinit();
 
@@ -912,7 +912,7 @@ pub fn dupeValue(gpa: std.mem.Allocator, v: anytype) !@TypeOf(v) {
 
                 break :st_blk dict;
             }
-            else if (isFileHandle(T)) {
+            else if (comptime isFileHandle(T)) {
                 const handle: T = .{ .handle = try std.posix.dup(v.handle) };
                 break :st_blk handle;
             }
