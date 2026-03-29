@@ -519,7 +519,7 @@ pub fn registerInterface(c: *Connection, impl: anytype, comptime path: []const u
     defer c.object_tree.mutex.unlock();
 
     const key = trie.comptimePathWithLastComponent(path, @TypeOf(impl.*).interface_name);
-    try c.object_tree.tree.insert(key, .{ .interface = &impl.interface, .allocator = gpa });
+    try c.object_tree.tree.insert(c.object_tree.tree.gpa, key, .{ .interface = &impl.interface, .allocator = gpa });
     impl.interface.bind(c, path);
 }
 
@@ -536,7 +536,7 @@ pub fn unregisterInterface(c: *Connection, impl: anytype, comptime path: []const
 
         if (&impl.interface != managed.interface) @panic("Logic error: &impl.interface != managed.interface");
         if (managed.interface.release() == 1) managed.interface.deinit(managed.allocator);
-        return c.object_tree.tree.remove(key);
+        return c.object_tree.tree.remove(c.object_tree.tree.gpa, key);
     } else return false;
 }
 
