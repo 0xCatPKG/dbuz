@@ -514,7 +514,6 @@ pub fn handleMessage(c: *Connection, m_a: struct {Message, *std.heap.ArenaAlloca
 pub fn registerInterface(c: *Connection, impl: anytype, comptime path: []const u8, gpa: mem.Allocator) !void {
     _ = impl.interface.reference();
     errdefer if (impl.interface.release() == 1) impl.interface.deinit(gpa);
-    if (impl.interface.vtable.method_call == null or impl.interface.vtable.property_op == null) return error.InvalidVTable;
 
     c.object_tree.mutex.lock();
     defer c.object_tree.mutex.unlock();
