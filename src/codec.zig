@@ -136,7 +136,7 @@ pub const Writer = struct {
 
                             self.position += try alignBuffer(self.w, 4, self.position);
                             try self.w.writeInt(u32, @truncate(container_buffer.len), self.endian);
-                            self.position += 4;
+                            self.position += 4 + try alignBuffer(self.w, 8, self.position + 4);
                             try self.w.writeAll(container_buffer);
                             self.position += container_buffer.len;
                         } else if (comptime types.isFileHandle(T)) {
@@ -387,18 +387,37 @@ pub const Reader = struct {
                         else if (comptime types.isDict(T)) {
                             const KV = T.KV;
 
+                            if (self.depth == 63) return error.DepthLimitReached;
+
                             var tmp_arena = std.heap.ArenaAllocator.init(a);
                             errdefer tmp_arena.deinit();
 
-                            const kv_slice = try self.read([]KV, tmp_arena.allocator());
+                            self.position += try alignBuffer(self.r, 4, self.position);
+                            const container_len = try self.r.takeInt(u32, self.endian);
+                            self.position += 4 + try alignBuffer(self.r, 8, self.position + 4);
+
+                            const container_data = try a.alloc(u8, container_len);
+                            defer a.free(container_data);
+
+                            try self.r.readSliceAll(container_data);
+                            self.position += container_len;
+
+                            var container = Io.Reader.fixed(container_data);
+                            var r = Reader.from(self.allocator, &container, self.fdlist, self.endian);
+                            r.depth = self.depth + 1;
 
                             var dict = T.init(tmp_arena.allocator());
 
-                            for (kv_slice) |kv| {
-                                const entry = try dict.getOrPut(kv.key);
-                                entry.key_ptr.* = kv.key;
-                                entry.value_ptr.* = kv.value;
+                            while (container.end - container.seek > 0) {
+                                const kv = try r.read(KV, a);
+                                try dict.put(kv.key, kv.value);
                             }
+
+                            // for (kv_slice) |kv| {
+                            //     const entry = try dict.getOrPut(kv.key);
+                            //     entry.key_ptr.* = kv.key;
+                            //     entry.value_ptr.* = kv.value;
+                            // }
                             return dict;
                         } else if (comptime types.isFileHandle(T)) {
                             if (self.fdlist == null) return error.UnixFDPassingNotSupported;
