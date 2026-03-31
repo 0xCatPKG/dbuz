@@ -5,34 +5,16 @@ const std = @import("std");
 /// Wrapper for []const u8 for distinguishing between byte arrays and strings.
 pub const String = struct {
     value: []const u8,
-    ownership: bool = false,
-
-    pub fn deinit(self: String, allocator: std.mem.Allocator) void {
-        if (!self.ownership) @panic("String is not owned");
-        allocator.free(self.value);
-    }
 };
 
 /// Wrapper for []const u8 for distinguishing between byte arrays and object paths.
 pub const ObjectPath = struct {
     value: []const u8,
-    ownership: bool = false,
-
-    pub fn deinit(self: ObjectPath, allocator: std.mem.Allocator) void {
-        if (!self.ownership) @panic("ObjectPath is not owned");
-        allocator.free(self.value);
-    }
 };
 
 /// Wrapper for []const u8 for distinguishing between byte arrays and signatures.
 pub const Signature = struct {
     value: []const u8,
-    ownership: bool = false,
-
-    pub fn deinit(self: Signature, allocator: std.mem.Allocator) void {
-        if (!self.ownership) @panic("Signature is not owned");
-        allocator.free(self.value);
-    }
 };
 
 pub inline fn isDict(comptime T: type) bool {
@@ -45,7 +27,7 @@ pub fn deinitValueRecursive(allocator: std.mem.Allocator, value: anytype) void {
     const typeinfo = @typeInfo(T);
 
     switch (T) {
-        String, ObjectPath, Signature => value.deinit(allocator),
+        String, ObjectPath, Signature => allocator.free(value.value),
         else => switch (typeinfo) {
             else => {},
             .pointer => {
@@ -861,7 +843,7 @@ pub fn dupeValue(gpa: std.mem.Allocator, v: anytype) !@TypeOf(v) {
 
     switch (T) {
         String, ObjectPath, Signature => {
-            return T{ .value = try gpa.dupe(u8, v.value), .ownership = true };
+            return T{ .value = try gpa.dupe(u8, v.value) };
         },
         else => {},
     }

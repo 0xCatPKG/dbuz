@@ -266,8 +266,8 @@ pub const Reader = struct {
                 const siglen: u8 = try self.r.takeByte();
                 self.position += 1;
 
-                const signature: Signature = .{ .value = try a.alloc(u8, siglen), .ownership = true };
-                errdefer signature.deinit(a);
+                const signature: Signature = .{ .value = try a.alloc(u8, siglen) };
+                errdefer a.free(signature.value);
 
                 try self.r.readSliceAll(@constCast(signature.value));
                 self.position += siglen;
@@ -283,8 +283,8 @@ pub const Reader = struct {
                 const strlen: u32 = try self.r.takeInt(u32, self.endian);
                 self.position += 4;
 
-                const string: String = .{ .value = try a.alloc(u8, strlen), .ownership = true };
-                errdefer string.deinit(a);
+                const string: String = .{ .value = try a.alloc(u8, strlen) };
+                errdefer a.free(string.value);
 
                 try self.r.readSliceAll(@constCast(string.value));
                 self.position += strlen;
@@ -300,8 +300,8 @@ pub const Reader = struct {
                 const pathlen: u32 = try self.r.takeInt(u32, self.endian);
                 self.position += 4;
 
-                const path: ObjectPath = .{ .value = try a.alloc(u8, pathlen), .ownership = true };
-                errdefer path.deinit(a);
+                const path: ObjectPath = .{ .value = try a.alloc(u8, pathlen) };
+                errdefer a.free(path.value);
 
                 try self.r.readSliceAll(@constCast(path.value));
                 self.position += pathlen;
@@ -450,7 +450,7 @@ pub const Reader = struct {
                         else {
                             if (un.tag_type == null) @compileError("Untagged unions are not supported");
                             const sig: Signature = try self.read(Signature, a);
-                            defer sig.deinit(a);
+                            defer a.free(sig.value);
 
                             var result: T = undefined;
 
