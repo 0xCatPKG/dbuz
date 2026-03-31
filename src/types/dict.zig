@@ -25,7 +25,7 @@ fn getHashFn(comptime K: type, comptime Context: type) (fn (Context, K) u64) {
                 return Wyhash.hash(0, std.mem.asBytes(&key));
             } else {
                 var hasher = Wyhash.init(0);
-                autoHash(&hasher, key, .Deep);
+                autoHash(&hasher, key, .DeepRecursive);
                 return hasher.final();
             }
         }
