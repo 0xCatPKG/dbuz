@@ -1,3 +1,6 @@
+> [!WARNING]
+> NOT PRODUCTION READY
+
 # DBuz - Pure Zig D-Bus client library
 
 This library is more like a pet project and practice for me to learn Zig. It provides a simple interface to interact with D-Bus offloading multiple tasks to the zig's comptime.
@@ -76,7 +79,7 @@ dbuz serializes native types using compile time reflection. Following mapping ex
 | `{}` | struct{...} | All structs are serialized as dicts, if they have following declarations: put, getOrPut, getOrPutAdapted, get, iterator, KV |
 | `v` | union(enum) {...} | All union types are serialized as a variants. Duplicate types are unchecked illegal behavior |
 
-Enums are serialized as their corresponding tag type. Exhaustive arrays are not supported for deserialization, as DBus can return any value, and dbuz internally uses `@enumFromInt()` for enum deserialization.
+Enums are serialized as their corresponding tag type. Exhaustive enums are not supported for deserialization, as DBus can return any value, and dbuz internally uses `@enumFromInt()` for enum deserialization.
 
 ## Publishing interfaces
 
