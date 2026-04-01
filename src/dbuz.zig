@@ -92,7 +92,13 @@ fn looper(_: std.mem.Allocator, c: *types.Connection) !void {
                 error.EndOfStream => break: loop,
                 else => return err,
             };
-            if (m_a) |ma| try c.handleMessage(ma);
+            if (m_a) |ma| c.handleMessage(ma) catch |err| switch (err) {
+                error.WriteFailed => {
+                    if (c.state == .Disconnected) break
+                    else return err;
+                },
+                else => return err
+            };
         }
     }
 
