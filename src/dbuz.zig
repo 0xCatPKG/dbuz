@@ -89,7 +89,7 @@ fn looper(_: std.mem.Allocator, c: *types.Connection) !void {
             // if (event.events & linux.EPOLL.HUP != 0) break :loop;
             const m_a = c.advance(null) catch |err| switch (err) {
                 error.ReadFailed => continue,
-                error.EndOfStream => break: loop,
+                error.EndOfStream, error.Disconnected => break: loop,
                 else => return err,
             };
             if (m_a) |ma| c.handleMessage(ma) catch |err| switch (err) {

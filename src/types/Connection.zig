@@ -144,7 +144,8 @@ pub fn release(c: *Connection) usize {
 }
 
 pub fn disconnect(c: *Connection) void {
-    if (c.state == .Disconnected) unreachable;
+    if (c.state == .Disconnected) return;
+    c.state = .Disconnected;
     posix.shutdown(c.handle, .both) catch {};
 
     c.tracker.mutex.lock();
