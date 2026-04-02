@@ -87,12 +87,11 @@ fn looper(_: std.mem.Allocator, c: *types.Connection) !void {
         const ready_cnt = posix.epoll_wait(epollfd, &events, 1);
         for (events[0..ready_cnt]) |_| {
             // if (event.events & linux.EPOLL.HUP != 0) break :loop;
-            const m_a = c.advance(null) catch |err| switch (err) {
+            while (c.advance(null) catch |err| switch (err) {
                 error.ReadFailed => continue,
                 error.EndOfStream, error.Disconnected => break: loop,
                 else => return err,
-            };
-            if (m_a) |ma| c.handleMessage(ma) catch |err| switch (err) {
+            }) |m_a| c.handleMessage(m_a) catch |err| switch (err) {
                 error.WriteFailed => {
                     if (c.state == .Disconnected) break
                     else return err;
