@@ -2,10 +2,9 @@
     .name = .dbuz,
     .version = "0.0.2",
     .fingerprint = 0x3ccbb597e5563b86, // Changing this has security and trust implications.
-    .minimum_zig_version = "0.15.2",
+    .minimum_zig_version = "0.16.0",
 
     .dependencies = .{
-        .dishwasher = .{ .url = "git+https://github.com/edqx/dishwasher.git#14a17bb2ea1b53ac89f4bc914d8ba4c00ee1b310", .hash = "dishwasher-2.0.0-aXVByTarAQCojk7aaxm436BqTMK13D-Ba6Z05klAIjsr" },
     },
 
     .paths = .{ "build.zig", "build.zig.zon", "src", "check.zig" },
